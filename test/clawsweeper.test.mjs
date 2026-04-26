@@ -5,11 +5,13 @@ import {
   applyDecisionPriority,
   auditFromSnapshot,
   auditHasStrictFailures,
+  detectTargetRepoFromGit,
   ghRetryKind,
   isCodexReviewCommentBody,
   isProtectedItem,
   itemNumbersArg,
   parseDecision,
+  parseRepoFlag,
   protectedLabels,
   relatedTitleSearchTerms,
   reviewActionForDecision,
@@ -509,4 +511,21 @@ test("safeOutputTail tolerates missing process output", () => {
   assert.equal(safeOutputTail(undefined), "");
   assert.equal(safeOutputTail(null), "");
   assert.equal(safeOutputTail("abcdef", 3), "def");
+});
+
+test("parseRepoFlag extracts repo from --repo flag", () => {
+  assert.equal(parseRepoFlag(["--repo", "myorg/myrepo"]), "myorg/myrepo");
+  assert.equal(parseRepoFlag(["--repo=myorg/myrepo"]), "myorg/myrepo");
+  assert.equal(parseRepoFlag(["plan", "--repo", "myorg/myrepo"]), "myorg/myrepo");
+  assert.equal(parseRepoFlag(["--other", "value"]), undefined);
+  assert.equal(parseRepoFlag([]), undefined);
+  // --repo followed by another flag is ignored (no value)
+  assert.equal(parseRepoFlag(["--repo", "--other"]), undefined);
+});
+
+test("detectTargetRepoFromGit parses GitHub remote URLs", () => {
+  // This test verifies the function runs without throwing; the actual value
+  // depends on the local git environment and may be undefined in CI.
+  const result = detectTargetRepoFromGit();
+  assert.ok(result === undefined || (typeof result === "string" && result.includes("/")));
 });

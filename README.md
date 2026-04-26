@@ -9,7 +9,27 @@ strong.
 
 ## Configuration
 
-Edit **`sweeper.config.json`** in the repository root before the first run:
+### Target repository
+
+pk-sweeper resolves the target repository in this priority order:
+
+1. **`--repo owner/repo` CLI flag** — pass it to any command:
+   ```sh
+   node dist/clawsweeper.js review --repo myorg/myrepo
+   ```
+2. **`CLAWSWEEPER_TARGET_REPO` environment variable**
+3. **`GH_REPO` environment variable** (shared with the `gh` CLI)
+4. **`sweeper.config.json` → `targetRepo` field** (see below)
+5. **Auto-detected from the git remote** — when you run pk-sweeper from inside a
+   local clone of the target repo, the `origin` remote URL is parsed automatically.
+
+This means you can run pk-sweeper against any repo from within a local clone
+**without touching `sweeper.config.json`** at all.
+
+### sweeper.config.json
+
+`sweeper.config.json` is optional when the target repo can be resolved by one of
+the methods above. When it exists, it can carry the remaining options:
 
 ```json
 {
@@ -23,7 +43,7 @@ Edit **`sweeper.config.json`** in the repository root before the first run:
 
 | Field | Required | Description |
 | --- | --- | --- |
-| `targetRepo` | **yes** | The GitHub repository to sweep, e.g. `"myorg/myrepo"` |
+| `targetRepo` | no | The GitHub repository to sweep, e.g. `"myorg/myrepo"`. Can be omitted when the repo is provided via flag, env var, or git remote. |
 | `docsUrl` | no | Base URL for the target repo's public docs site (enables pretty doc links in comments). Set `null` to disable. |
 | `pluginEcosystem` | no | `{ "name": "...", "url": "..." }` — if your project has a plugin/extension ecosystem, Codex may propose closing plugin-fit issues here rather than in the core repo. Set `null` to disable the `clawhub` close reason. |
 | `extraStopWords` | no | Additional words to skip when searching for related items by title (e.g. the repo name or common project terms). |
