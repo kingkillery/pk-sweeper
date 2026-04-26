@@ -387,10 +387,10 @@ export function detectTargetRepoFromGit(): string | undefined {
 }
 
 function resolveTargetRepo(config: SweeperConfig): string {
-  // Priority: --repo flag > CLAWSWEEPER_TARGET_REPO env var > config file > git remote auto-detection
+  // Priority: --repo flag > PKSWEEPER_TARGET_REPO env var > config file > git remote auto-detection
   const fromFlag = parseRepoFlag(process.argv.slice(2));
   if (fromFlag) return fromFlag;
-  const fromEnv = process.env.CLAWSWEEPER_TARGET_REPO ?? process.env.GH_REPO;
+  const fromEnv = process.env.PKSWEEPER_TARGET_REPO ?? process.env.GH_REPO;
   if (fromEnv && fromEnv.includes("/")) return fromEnv;
   if (typeof config.targetRepo === "string" && config.targetRepo.includes("/")) {
     return config.targetRepo;
@@ -401,7 +401,7 @@ function resolveTargetRepo(config: SweeperConfig): string {
     "Could not determine target repository. Specify it via one of:\n" +
       '  • sweeper.config.json: { "targetRepo": "owner/repo" }\n' +
       "  • --repo owner/repo CLI flag\n" +
-      "  • CLAWSWEEPER_TARGET_REPO=owner/repo environment variable\n" +
+      "  • PKSWEEPER_TARGET_REPO=owner/repo environment variable\n" +
       "  • GH_REPO=owner/repo environment variable\n" +
       "  • Running from inside a local git repo with a GitHub remote origin",
   );
@@ -434,13 +434,13 @@ const DAILY_REVIEW_DAYS = 1;
 const WEEKLY_REVIEW_DAYS = 7;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RECENT_MISSING_OPEN_MS = DAY_MS;
-const STATUS_START = "<!-- clawsweeper-status:start -->";
-const STATUS_END = "<!-- clawsweeper-status:end -->";
+const STATUS_START = "<!-- pksweeper-status:start -->";
+const STATUS_END = "<!-- pksweeper-status:end -->";
 const DEFAULT_CODEX_MODEL = "gpt-5.5";
 const DEFAULT_REASONING_EFFORT = "high";
 const DEFAULT_SERVICE_TIER = "fast";
 const REVIEW_POLICY_VERSION = "2026-04-26-policy-v5";
-const REVIEW_COMMENT_MARKER_PREFIX = "<!-- clawsweeper-review";
+const REVIEW_COMMENT_MARKER_PREFIX = "<!-- pksweeper-review";
 const PROTECTED_LABELS = new Set(
   CONFIG.protectedLabels ?? ["security", "beta-blocker", "release-blocker", "maintainer"],
 );
@@ -629,10 +629,10 @@ function maybePublishThrottleHeartbeat(options: {
   attempts: number;
   waitMs: number;
 }): void {
-  if (process.env.CLAWSWEEPER_PUBLISH_THROTTLE_STATUS !== "true") return;
-  const minWaitMs = Number(process.env.CLAWSWEEPER_THROTTLE_STATUS_MIN_WAIT_MS ?? 60_000);
+  if (process.env.PKSWEEPER_PUBLISH_THROTTLE_STATUS !== "true") return;
+  const minWaitMs = Number(process.env.PKSWEEPER_THROTTLE_STATUS_MIN_WAIT_MS ?? 60_000);
   if (options.waitMs < minWaitMs) return;
-  const minIntervalMs = Number(process.env.CLAWSWEEPER_THROTTLE_STATUS_MIN_INTERVAL_MS ?? 120_000);
+  const minIntervalMs = Number(process.env.PKSWEEPER_THROTTLE_STATUS_MIN_INTERVAL_MS ?? 120_000);
   const now = Date.now();
   if (now - lastThrottleHeartbeatAt < minIntervalMs) return;
   lastThrottleHeartbeatAt = now;
@@ -641,7 +641,7 @@ function maybePublishThrottleHeartbeat(options: {
     const readmePath = join(ROOT, "README.md");
     if (!existsSync(readmePath)) return;
     const context = throttleHeartbeatContext?.();
-    const checkpoint = process.env.CLAWSWEEPER_APPLY_CHECKPOINT;
+    const checkpoint = process.env.PKSWEEPER_APPLY_CHECKPOINT;
     const checkpointText = checkpoint ? `Checkpoint ${checkpoint}. ` : "";
     const detail = [
       `${checkpointText}GitHub throttled while applying close decisions.`,
@@ -659,8 +659,8 @@ function maybePublishThrottleHeartbeat(options: {
       state: "Apply throttled",
       detail,
     };
-    if (process.env.CLAWSWEEPER_RUN_URL) {
-      statusOptions.runUrl = process.env.CLAWSWEEPER_RUN_URL;
+    if (process.env.PKSWEEPER_RUN_URL) {
+      statusOptions.runUrl = process.env.PKSWEEPER_RUN_URL;
     }
     const block = workflowStatusBlock(statusOptions);
     const readme = readFileSync(readmePath, "utf8");
@@ -772,7 +772,7 @@ function reviewPolicyHash(options: {
       sandboxMode: options.sandboxMode ?? "read-only",
       serviceTier: options.serviceTier ?? DEFAULT_SERVICE_TIER,
       prompt: readFileSync(join(ROOT, "prompts", "review-item.md"), "utf8"),
-      schema: readFileSync(join(ROOT, "schema", "clawsweeper-decision.schema.json"), "utf8"),
+      schema: readFileSync(join(ROOT, "schema", "pksweeper-decision.schema.json"), "utf8"),
     }),
   ).slice(0, 16);
 }
@@ -2112,7 +2112,7 @@ function runCodex(options: {
       "-C",
       options.targetDir,
       "--output-schema",
-      join(ROOT, "schema", "clawsweeper-decision.schema.json"),
+      join(ROOT, "schema", "pksweeper-decision.schema.json"),
       "--output-last-message",
       outputPath,
       "--sandbox",
@@ -3037,7 +3037,7 @@ function reviewCommand(args: Args): void {
       : undefined;
   const readonlyOpenclaw = boolArg(args.readonly_target ?? args.readonly_openclaw);
   const requestedApplyClosures =
-    boolArg(args.apply_closures) || process.env.CLAWSWEEPER_APPLY_CLOSURES === "true";
+    boolArg(args.apply_closures) || process.env.PKSWEEPER_APPLY_CLOSURES === "true";
   if (requestedApplyClosures) {
     console.error("[review] apply_closures is disabled; review shards are proposal-only");
   }
@@ -3286,7 +3286,7 @@ function applyDecisionsCommand(args: Args): void {
         results.push({
           number,
           action: "closed",
-          reason: "matching ClawSweeper review comment already exists",
+          reason: "matching PkSweeper review comment already exists",
         });
         maybeLogProgress(`archived #${number}: already ${state} with matching review comment`);
         if (processedCount >= processedLimit || closedCount >= limit) break;
@@ -4005,7 +4005,7 @@ function statusCommand(args: Args): void {
 }
 
 function checkCommand(): void {
-  JSON.parse(readFileSync(join(ROOT, "schema", "clawsweeper-decision.schema.json"), "utf8"));
+  JSON.parse(readFileSync(join(ROOT, "schema", "pksweeper-decision.schema.json"), "utf8"));
   if (!existsSync(join(ROOT, ".github", "workflows", "sweep.yml")))
     throw new Error("Missing workflow");
   console.log("ok");

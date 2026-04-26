@@ -15,9 +15,9 @@ pk-sweeper resolves the target repository in this priority order:
 
 1. **`--repo owner/repo` CLI flag** — pass it to any command:
    ```sh
-   node dist/clawsweeper.js review --repo myorg/myrepo
+   node dist/pksweeper.js review --repo myorg/myrepo
    ```
-2. **`CLAWSWEEPER_TARGET_REPO` environment variable**
+2. **`PKSWEEPER_TARGET_REPO` environment variable**
 3. **`GH_REPO` environment variable** (shared with the `gh` CLI)
 4. **`sweeper.config.json` → `targetRepo` field** (see below)
 5. **Auto-detected from the git remote** — when you run pk-sweeper from inside a
@@ -72,7 +72,7 @@ Last dashboard update: Apr 26, 2026, 04:01 UTC
 
 ### Current Run
 
-<!-- clawsweeper-status:start -->
+<!-- pksweeper-status:start -->
 **Workflow status**
 
 Updated: Apr 26, 2026, 04:01 UTC
@@ -80,8 +80,8 @@ Updated: Apr 26, 2026, 04:01 UTC
 State: Apply finished
 
 Apply/comment-sync run finished with 20 fresh closes out of requested limit 20. See apply-report.json for per-item results.
-Run: [https://github.com/openclaw/clawsweeper/actions/runs/24947732166](https://github.com/openclaw/clawsweeper/actions/runs/24947732166)
-<!-- clawsweeper-status:end -->
+Run: [https://github.com/kingkillery/pk-sweeper/actions/runs/24947732166](https://github.com/kingkillery/pk-sweeper/actions/runs/24947732166)
+<!-- pksweeper-status:end -->
 
 ### Queue
 
@@ -136,16 +136,16 @@ Latest review: Apr 26, 2026, 03:53 UTC. Latest close: Apr 26, 2026, 04:00 UTC. L
 
 | Item | Title | Outcome | Status | Reviewed |
 | --- | --- | --- | --- | --- |
-| [#67817](https://github.com/openclaw/openclaw/issues/67817) | [Bug]: Discord setup: service file doesn't include DISCORD_BOT_TOKEN environment variable | [keep_open / kept_open](https://github.com/openclaw/clawsweeper/blob/main/items/67817.md) | complete | Apr 26, 2026, 03:53 UTC |
-| [#67759](https://github.com/openclaw/openclaw/issues/67759) | WebChat image recognition fails when using coding.dashscope base URL for Qwen models | [keep_open / kept_open](https://github.com/openclaw/clawsweeper/blob/main/items/67759.md) | complete | Apr 26, 2026, 03:53 UTC |
-| [#67826](https://github.com/openclaw/openclaw/pull/67826) | Telegram: harden setup allowFrom and target resolution | [keep_open / kept_open](https://github.com/openclaw/clawsweeper/blob/main/items/67826.md) | complete | Apr 26, 2026, 03:52 UTC |
-| [#67689](https://github.com/openclaw/openclaw/issues/67689) | Feature request: Session management UI (hide/archive/filter sessions) | [close / proposed_close](https://github.com/openclaw/clawsweeper/blob/main/items/67689.md) | complete | Apr 26, 2026, 03:51 UTC |
-| [#67970](https://github.com/openclaw/openclaw/issues/67970) | Feature: built-in memory should support automatic context extraction and daily-log writing | [keep_open / kept_open](https://github.com/openclaw/clawsweeper/blob/main/items/67970.md) | complete | Apr 26, 2026, 03:51 UTC |
-| [#67836](https://github.com/openclaw/openclaw/pull/67836) | feat(memory-core): Memory v2 foundation — sidecar, ingest, rerank (all default-off) | [keep_open / kept_open](https://github.com/openclaw/clawsweeper/blob/main/items/67836.md) | complete | Apr 26, 2026, 03:51 UTC |
-| [#67889](https://github.com/openclaw/openclaw/issues/67889) | Image understanding tool has hardcoded 60s timeout, ignoring configured timeoutSeconds | [keep_open / kept_open](https://github.com/openclaw/clawsweeper/blob/main/items/67889.md) | complete | Apr 26, 2026, 03:51 UTC |
-| [#67952](https://github.com/openclaw/openclaw/pull/67952) | fix(memory-lancedb): get memory records through ltm list command | [keep_open / kept_open](https://github.com/openclaw/clawsweeper/blob/main/items/67952.md) | complete | Apr 26, 2026, 03:51 UTC |
-| [#67946](https://github.com/openclaw/openclaw/pull/67946) | Clear stale subagent lineage on top-level sessions | [keep_open / kept_open](https://github.com/openclaw/clawsweeper/blob/main/items/67946.md) | complete | Apr 26, 2026, 03:51 UTC |
-| [#67943](https://github.com/openclaw/openclaw/issues/67943) | Normal sessions can inherit stale subagent lineage and incorrectly hit sessions_spawn depth limits | [keep_open / kept_open](https://github.com/openclaw/clawsweeper/blob/main/items/67943.md) | complete | Apr 26, 2026, 03:51 UTC |
+| [#67817](https://github.com/openclaw/openclaw/issues/67817) | [Bug]: Discord setup: service file doesn't include DISCORD_BOT_TOKEN environment variable | [keep_open / kept_open](https://github.com/kingkillery/pk-sweeper/blob/main/items/67817.md) | complete | Apr 26, 2026, 03:53 UTC |
+| [#67759](https://github.com/openclaw/openclaw/issues/67759) | WebChat image recognition fails when using coding.dashscope base URL for Qwen models | [keep_open / kept_open](https://github.com/kingkillery/pk-sweeper/blob/main/items/67759.md) | complete | Apr 26, 2026, 03:53 UTC |
+| [#67826](https://github.com/openclaw/openclaw/pull/67826) | Telegram: harden setup allowFrom and target resolution | [keep_open / kept_open](https://github.com/kingkillery/pk-sweeper/blob/main/items/67826.md) | complete | Apr 26, 2026, 03:52 UTC |
+| [#67689](https://github.com/openclaw/openclaw/issues/67689) | Feature request: Session management UI (hide/archive/filter sessions) | [close / proposed_close](https://github.com/kingkillery/pk-sweeper/blob/main/items/67689.md) | complete | Apr 26, 2026, 03:51 UTC |
+| [#67970](https://github.com/openclaw/openclaw/issues/67970) | Feature: built-in memory should support automatic context extraction and daily-log writing | [keep_open / kept_open](https://github.com/kingkillery/pk-sweeper/blob/main/items/67970.md) | complete | Apr 26, 2026, 03:51 UTC |
+| [#67836](https://github.com/openclaw/openclaw/pull/67836) | feat(memory-core): Memory v2 foundation — sidecar, ingest, rerank (all default-off) | [keep_open / kept_open](https://github.com/kingkillery/pk-sweeper/blob/main/items/67836.md) | complete | Apr 26, 2026, 03:51 UTC |
+| [#67889](https://github.com/openclaw/openclaw/issues/67889) | Image understanding tool has hardcoded 60s timeout, ignoring configured timeoutSeconds | [keep_open / kept_open](https://github.com/kingkillery/pk-sweeper/blob/main/items/67889.md) | complete | Apr 26, 2026, 03:51 UTC |
+| [#67952](https://github.com/openclaw/openclaw/pull/67952) | fix(memory-lancedb): get memory records through ltm list command | [keep_open / kept_open](https://github.com/kingkillery/pk-sweeper/blob/main/items/67952.md) | complete | Apr 26, 2026, 03:51 UTC |
+| [#67946](https://github.com/openclaw/openclaw/pull/67946) | Clear stale subagent lineage on top-level sessions | [keep_open / kept_open](https://github.com/kingkillery/pk-sweeper/blob/main/items/67946.md) | complete | Apr 26, 2026, 03:51 UTC |
+| [#67943](https://github.com/openclaw/openclaw/issues/67943) | Normal sessions can inherit stale subagent lineage and incorrectly hit sessions_spawn depth limits | [keep_open / kept_open](https://github.com/kingkillery/pk-sweeper/blob/main/items/67943.md) | complete | Apr 26, 2026, 03:51 UTC |
 
 </details>
 
@@ -248,8 +248,8 @@ Required secrets:
 - `OPENAI_API_KEY`: OpenAI API key used to log Codex in before review shards run.
 - `CODEX_API_KEY`: optional compatibility alias for the same key during the login check.
 - `OPENCLAW_GH_TOKEN`: optional fallback GitHub token for read-heavy target repo scans and artifact publish reconciliation when the GitHub App token is unavailable.
-- `CLAWSWEEPER_APP_ID`: GitHub App ID for the bot app (optional; used for attributing comments/closes to the bot).
-- `CLAWSWEEPER_APP_PRIVATE_KEY`: private key for the bot app; plan/review jobs use a short-lived GitHub App installation token for read-heavy target API calls, and apply/comment-sync jobs use the app token for comments and closes.
+- `PKSWEEPER_APP_ID`: GitHub App ID for the bot app (optional; used for attributing comments/closes to the bot).
+- `PKSWEEPER_APP_PRIVATE_KEY`: private key for the bot app; plan/review jobs use a short-lived GitHub App installation token for read-heavy target API calls, and apply/comment-sync jobs use the app token for comments and closes.
 
 Token flow:
 

@@ -1,6 +1,6 @@
 # Changelog
 
-All notable ClawSweeper changes are tracked here.
+All notable PkSweeper changes are tracked here.
 
 This file was reconstructed from first-parent git history. Generated dashboard,
 checkpoint, and status-only commits are intentionally omitted.
@@ -9,7 +9,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Added
 
-- Scaffolded ClawSweeper as a conservative OpenClaw maintainer bot that writes one
+- Scaffolded PkSweeper as a conservative OpenClaw maintainer bot that writes one
   markdown review record per open issue or pull request.
 - Added proposal-only review flow plus an explicit apply mode for unchanged,
   high-confidence close proposals.

@@ -21,7 +21,7 @@ import {
   shouldRetryGh,
   shouldPlanItem,
   validateCloseDecision,
-} from "../dist/clawsweeper.js";
+} from "../dist/pksweeper.js";
 
 function item(overrides = {}) {
   return {
