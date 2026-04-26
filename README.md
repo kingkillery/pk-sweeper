@@ -233,9 +233,10 @@ npm install -g pk-sweeper
 npx pk-sweeper quick
 ```
 
-`quick` is a single local run. It plans once, starts async review shards, and
-merges proposal artifacts into `.pksweeper/items`. It does not schedule itself
-or run 24/7.
+`quick` is a single local run. It plans once, refreshes target Git metadata once,
+starts async review shards, and merges proposal artifacts into a sibling
+workspace folder named `<repo>.pksweeper/items`. It does not schedule itself or
+run 24/7.
 
 Defaults:
 
@@ -245,6 +246,7 @@ Defaults:
 - `--codex-reasoning-effort medium`
 - `--codex-sandbox read-only`
 - `--max-pages 25`
+- `--workspace ../<repo>.pksweeper`
 
 Example with more sub-agents:
 

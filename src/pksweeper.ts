@@ -12,7 +12,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, delimiter, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 type ItemKind = "issue" | "pull_request";
@@ -522,6 +522,15 @@ function boolArg(value: string | boolean | string[] | undefined): boolean {
   if (typeof value === "boolean") return value;
   if (typeof value !== "string") return false;
   return value === "1" || value === "true" || value === "yes";
+}
+
+function pathListArg(value: string | boolean | string[] | undefined): string[] {
+  if (typeof value !== "string") return [];
+  return value
+    .split(delimiter)
+    .map((path) => path.trim())
+    .filter(Boolean)
+    .map((path) => resolve(path));
 }
 
 export function itemNumbersArg(
@@ -1935,8 +1944,9 @@ function collectItemContext(item: Item): ItemContext {
   return context;
 }
 
-function gitInfo(targetDir: string): GitInfo {
-  run("git", ["fetch", "origin", "main", "--depth=50"], { cwd: targetDir });
+function gitInfo(targetDir: string, options: { fetch?: boolean } = {}): GitInfo {
+  const fetch = options.fetch ?? true;
+  if (fetch) run("git", ["fetch", "origin", "main", "--depth=50"], { cwd: targetDir });
   const mainSha = run("git", ["rev-parse", "origin/main"], { cwd: targetDir });
   let latestRelease: LatestRelease | null = null;
   try {
@@ -1949,7 +1959,7 @@ function gitInfo(targetDir: string): GitInfo {
   } catch {
     latestRelease = null;
   }
-  if (latestRelease?.tagName) {
+  if (fetch && latestRelease?.tagName) {
     try {
       run("git", ["fetch", "--force", "origin", "tag", latestRelease.tagName, "--depth=1"], {
         cwd: targetDir,
@@ -2062,11 +2072,23 @@ function codexEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-function targetDirtyStatus(targetDir: string): string {
-  return run("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
+function targetDirtyStatus(targetDir: string, ignoredPaths: string[] = []): string {
+  const ignoredPrefixes = ignoredPaths
+    .map((path) => relative(targetDir, path).replaceAll("\\", "/"))
+    .filter((path) => path && !path.startsWith("..") && path !== ".")
+    .map((path) => (path.endsWith("/") ? path : `${path}/`));
+  const status = run("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
     cwd: targetDir,
     env: { GIT_OPTIONAL_LOCKS: "0" },
   });
+  if (ignoredPrefixes.length === 0 || !status) return status;
+  return status
+    .split("\n")
+    .filter((line) => {
+      const path = line.slice(3).replaceAll("\\", "/");
+      return !ignoredPrefixes.some((prefix) => path === prefix.slice(0, -1) || path.startsWith(prefix));
+    })
+    .join("\n");
 }
 
 function makeTreeReadOnly(path: string): void {
@@ -2090,12 +2112,13 @@ function runCodex(options: {
   serviceTier: string;
   timeoutMs: number;
   workDir: string;
+  dirtyIgnorePaths?: string[];
 }): Decision {
   ensureDir(options.workDir);
   const promptPath = join(options.workDir, `${options.item.number}.prompt.md`);
   const outputPath = join(options.workDir, `${options.item.number}.json`);
   writeFileSync(promptPath, promptFor(options.item, options.context, options.git), "utf8");
-  const dirtyBefore = targetDirtyStatus(options.targetDir);
+  const dirtyBefore = targetDirtyStatus(options.targetDir, options.dirtyIgnorePaths);
   if (dirtyBefore) {
     throw new Error(
       `Target checkout is dirty before reviewing #${options.item.number}:\n${dirtyBefore}`,
@@ -2134,7 +2157,7 @@ function runCodex(options: {
       timeout: options.timeoutMs,
     },
   );
-  const dirtyAfter = targetDirtyStatus(options.targetDir);
+  const dirtyAfter = targetDirtyStatus(options.targetDir, options.dirtyIgnorePaths);
   if (dirtyAfter) {
     throw new Error(
       `Codex dirtied the target checkout while reviewing #${options.item.number}:\n${dirtyAfter}`,
@@ -3042,13 +3065,18 @@ function reviewCommand(args: Args): void {
           .filter((value) => Number.isInteger(value) && value > 0)
       : undefined;
   const readonlyOpenclaw = boolArg(args.readonly_target ?? args.readonly_openclaw);
+  const skipGitFetch = boolArg(args.skip_git_fetch);
+  const dirtyIgnorePaths = [
+    ...pathListArg(args.dirty_ignore_dir),
+    ...pathListArg(args.dirty_ignore_dirs),
+  ];
   const requestedApplyClosures =
     boolArg(args.apply_closures) || process.env.PKSWEEPER_APPLY_CLOSURES === "true";
   if (requestedApplyClosures) {
     console.error("[review] apply_closures is disabled; review shards are proposal-only");
   }
   ensureDir(artifactDir);
-  const git = gitInfo(targetDir);
+  const git = gitInfo(targetDir, { fetch: !skipGitFetch });
   const reviewPolicy = reviewPolicyHash({ model, reasoningEffort, sandboxMode, serviceTier });
   if (readonlyOpenclaw) makeTreeReadOnly(targetDir);
   const selectionOptions: Parameters<typeof selectCandidates>[0] = {
@@ -3090,6 +3118,7 @@ function reviewCommand(args: Args): void {
         serviceTier,
         timeoutMs,
         workDir: join(artifactDir, "codex"),
+        dirtyIgnorePaths,
       });
     } catch (error) {
       decision = codexFailureDecision(
@@ -3147,6 +3176,10 @@ function ensureTargetCheckout(targetDir: string): void {
   ]);
 }
 
+function defaultQuickWorkspace(targetDir: string): string {
+  return join(dirname(targetDir), `${basename(targetDir)}.pksweeper`);
+}
+
 function runChild(command: string, args: string[], options: { cwd: string }): Promise<number> {
   return new Promise((resolvePromise) => {
     const child = spawn(command, args, {
@@ -3189,7 +3222,8 @@ async function quickCommand(args: Args): Promise<void> {
       : isGitCheckout(process.cwd())
         ? process.cwd()
         : resolve(TARGET_REPO.split("/")[1] ?? "target-repo");
-  const workspace = resolve(stringArg(args.workspace, join(targetDir, ".pksweeper")));
+  const workspace = resolve(stringArg(args.workspace, defaultQuickWorkspace(targetDir)));
+  const legacyWorkspace = join(targetDir, ".pksweeper");
   const itemsDir = resolve(stringArg(args.items_dir, join(workspace, "items")));
   const closedDir = resolve(stringArg(args.closed_dir, join(workspace, "closed")));
   const artifactDir = resolve(stringArg(args.artifact_dir, join(workspace, "artifacts", "reviews")));
@@ -3211,6 +3245,8 @@ async function quickCommand(args: Args): Promise<void> {
   ensureDir(closedDir);
   ensureDir(artifactDir);
   ensureTargetCheckout(targetDir);
+  console.error("[quick] refreshing target git metadata before starting shards");
+  gitInfo(targetDir);
 
   const reviewPolicy = reviewPolicyHash({ model, reasoningEffort, sandboxMode, serviceTier });
   const planOptions: Parameters<typeof planCandidates>[0] = {
@@ -3273,6 +3309,9 @@ async function quickCommand(args: Args): Promise<void> {
         String(timeoutMs),
         "--item-numbers",
         shard.itemNumbers.join(","),
+        "--skip-git-fetch",
+        "--dirty-ignore-dirs",
+        [workspace, legacyWorkspace].join(delimiter),
         "--shard-index",
         "0",
         "--shard-count",
