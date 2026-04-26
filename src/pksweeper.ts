@@ -564,10 +564,34 @@ function resolveExecutable(command: string): string | undefined {
   return executableCandidates(command).find((candidate) => existsSync(candidate));
 }
 
-function resolveCodexBin(value?: string): string {
+interface CodexCommand {
+  command: string;
+  argsPrefix: string[];
+  display: string;
+  source: string;
+}
+
+function npmCodexJsForShim(path: string): string | undefined {
+  if (!/\.(?:cmd|ps1)$/i.test(path)) return undefined;
+  const codexJs = join(dirname(path), "node_modules", "@openai", "codex", "bin", "codex.js");
+  return existsSync(codexJs) ? codexJs : undefined;
+}
+
+function resolveCodexCommand(value?: string): CodexCommand {
   const configured = value || process.env.PKSWEEPER_CODEX_BIN || process.env.CODEX_BIN;
   const resolved = configured ? resolveExecutable(configured) : resolveExecutable("codex");
-  if (resolved) return resolved;
+  if (resolved) {
+    const codexJs = npmCodexJsForShim(resolved);
+    if (codexJs) {
+      return {
+        command: process.execPath,
+        argsPrefix: [codexJs],
+        display: `${process.execPath} ${codexJs}`,
+        source: resolved,
+      };
+    }
+    return { command: resolved, argsPrefix: [], display: resolved, source: resolved };
+  }
   throw new Error(
     "Could not find the Codex CLI executable. Install @openai/codex globally, add codex to PATH, or pass --codex-bin /absolute/path/to/codex.",
   );
@@ -578,7 +602,7 @@ function needsWindowsCommandShell(command: string): boolean {
 }
 
 function codexSpawnSync(
-  command: string,
+  command: CodexCommand,
   args: string[],
   options: {
     cwd: string;
@@ -588,18 +612,18 @@ function codexSpawnSync(
     maxBuffer?: number;
   },
 ): ReturnType<typeof spawnSync> {
-  return spawnSync(command, args, {
+  return spawnSync(command.command, [...command.argsPrefix, ...args], {
     cwd: options.cwd,
     encoding: "utf8",
     env: options.env,
     input: options.input,
     maxBuffer: options.maxBuffer,
     timeout: options.timeout,
-    shell: needsWindowsCommandShell(command) ? (process.env.ComSpec ?? true) : false,
+    shell: needsWindowsCommandShell(command.command) ? (process.env.ComSpec ?? true) : false,
   });
 }
 
-function preflightCodexBin(command: string, cwd: string): void {
+function preflightCodexBin(command: CodexCommand, cwd: string): void {
   const result = codexSpawnSync(command, ["--version"], {
     cwd,
     env: process.env,
@@ -608,7 +632,7 @@ function preflightCodexBin(command: string, cwd: string): void {
   });
   if (result.error || result.status !== 0) {
     throw new Error(
-      `Codex CLI preflight failed for ${command}: ${
+      `Codex CLI preflight failed for ${command.display}: ${
         result.error?.message ??
         safeOutputTail(spawnOutputText(result.stderr)) ??
         `exit ${result.status}`
@@ -2218,7 +2242,7 @@ function runCodex(options: {
   serviceTier: string;
   timeoutMs: number;
   workDir: string;
-  codexBin: string;
+  codexCommand: CodexCommand;
   dirtyIgnorePaths?: string[];
 }): Decision {
   ensureDir(options.workDir);
@@ -2232,7 +2256,7 @@ function runCodex(options: {
     );
   }
   const result = codexSpawnSync(
-    options.codexBin,
+    options.codexCommand,
     [
       "exec",
       "-m",
@@ -2269,6 +2293,24 @@ function runCodex(options: {
       `Codex dirtied the target checkout while reviewing #${options.item.number}:\n${dirtyAfter}`,
     );
   }
+  if (existsSync(outputPath)) {
+    try {
+      return parseDecision(JSON.parse(readFileSync(outputPath, "utf8").trim()));
+    } catch (error) {
+      const decision = codexFailureDecision(
+        result.status,
+        `Codex wrote invalid JSON or schema-invalid output to ${outputPath}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        spawnOutputText(result.stdout),
+      );
+      throw new Error(
+        `Codex review wrote invalid JSON for #${options.item.number}: ${decision.evidence
+          .map((entry) => entry.detail)
+          .join("\n")}`,
+      );
+    }
+  }
   if (result.error) {
     throw new Error(
       `Codex review failed for #${options.item.number}: ${result.error.message}\n${
@@ -2299,22 +2341,7 @@ function runCodex(options: {
         .join("\n")}`,
     );
   }
-  try {
-    return parseDecision(JSON.parse(readFileSync(outputPath, "utf8").trim()));
-  } catch (error) {
-    const decision = codexFailureDecision(
-      result.status,
-      `Codex wrote invalid JSON or schema-invalid output to ${outputPath}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-      spawnOutputText(result.stdout),
-    );
-    throw new Error(
-      `Codex review wrote invalid JSON for #${options.item.number}: ${decision.evidence
-        .map((entry) => entry.detail)
-        .join("\n")}`,
-    );
-  }
+  throw new Error(`Codex review did not produce output for #${options.item.number}.`);
 }
 
 function closeReasonText(reason: CloseReason): string {
@@ -3162,7 +3189,9 @@ function reviewCommand(args: Args): void {
   const reasoningEffort = stringArg(args.codex_reasoning_effort, DEFAULT_REASONING_EFFORT);
   const sandboxMode = stringArg(args.codex_sandbox, "read-only");
   const serviceTier = stringArg(args.codex_service_tier, DEFAULT_SERVICE_TIER);
-  const codexBin = resolveCodexBin(typeof args.codex_bin === "string" ? args.codex_bin : undefined);
+  const codexCommand = resolveCodexCommand(
+    typeof args.codex_bin === "string" ? args.codex_bin : undefined,
+  );
   const timeoutMs = numberArg(args.codex_timeout_ms, 600_000);
   const shardIndex = numberArg(args.shard_index, 0);
   const shardCount = numberArg(args.shard_count, 1);
@@ -3229,7 +3258,7 @@ function reviewCommand(args: Args): void {
         serviceTier,
         timeoutMs,
         workDir: join(artifactDir, "codex"),
-        codexBin,
+        codexCommand,
         dirtyIgnorePaths,
       });
     } catch (error) {
@@ -3291,6 +3320,10 @@ function ensureTargetCheckout(targetDir: string): void {
 
 function defaultQuickWorkspace(targetDir: string): string {
   return join(dirname(targetDir), `${basename(targetDir)}.pksweeper`);
+}
+
+function quickRunId(): string {
+  return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
 interface QuickReport {
@@ -3513,8 +3546,9 @@ async function quickCommand(args: Args): Promise<void> {
   const legacyWorkspace = join(targetDir, ".pksweeper");
   const itemsDir = resolve(stringArg(args.items_dir, join(workspace, "items")));
   const closedDir = resolve(stringArg(args.closed_dir, join(workspace, "closed")));
+  const runId = quickRunId();
   const artifactDir = resolve(
-    stringArg(args.artifact_dir, join(workspace, "artifacts", "reviews")),
+    stringArg(args.artifact_dir, join(workspace, "artifacts", "reviews", runId)),
   );
   const batchSize = numberArg(args.batch_size, 1);
   const maxPages = numberArg(args.max_pages, 25);
@@ -3525,7 +3559,9 @@ async function quickCommand(args: Args): Promise<void> {
   const reasoningEffort = stringArg(args.codex_reasoning_effort, "medium");
   const sandboxMode = stringArg(args.codex_sandbox, "read-only");
   const serviceTier = stringArg(args.codex_service_tier, DEFAULT_SERVICE_TIER);
-  const codexBin = resolveCodexBin(typeof args.codex_bin === "string" ? args.codex_bin : undefined);
+  const codexCommand = resolveCodexCommand(
+    typeof args.codex_bin === "string" ? args.codex_bin : undefined,
+  );
   const timeoutMs = numberArg(args.codex_timeout_ms, 600_000);
   const hotIntake = boolArg(args.hot_intake);
   const itemNumber = numberArg(args.item_number, 0) || undefined;
@@ -3535,8 +3571,8 @@ async function quickCommand(args: Args): Promise<void> {
   ensureDir(closedDir);
   ensureDir(artifactDir);
   ensureTargetCheckout(targetDir);
-  console.error(`[quick] using Codex executable: ${codexBin}`);
-  preflightCodexBin(codexBin, targetDir);
+  console.error(`[quick] using Codex executable: ${codexCommand.display}`);
+  preflightCodexBin(codexCommand, targetDir);
   console.error("[quick] refreshing target git metadata before starting shards");
   gitInfo(targetDir);
 
@@ -3554,6 +3590,10 @@ async function quickCommand(args: Args): Promise<void> {
   if (!boolArg(args.respect_exclusions)) planOptions.includeExcluded = true;
   const plan = planCandidates(planOptions);
   const activeShards = plan.shards.filter((shard) => shard.itemNumbers.length > 0);
+  for (const item of plan.candidates) {
+    const staleReport = join(itemsDir, `${item.number}.md`);
+    if (existsSync(staleReport)) unlinkSync(staleReport);
+  }
   writeFileSync(
     join(workspace, "quick-plan.json"),
     `${JSON.stringify({ ...plan, reviewPolicy, model, reasoningEffort }, null, 2)}\n`,
@@ -3598,7 +3638,7 @@ async function quickCommand(args: Args): Promise<void> {
         "--codex-service-tier",
         serviceTier,
         "--codex-bin",
-        codexBin,
+        codexCommand.source,
         "--codex-timeout-ms",
         String(timeoutMs),
         "--item-numbers",
