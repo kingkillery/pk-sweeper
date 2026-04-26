@@ -234,9 +234,10 @@ npx pk-sweeper quick
 ```
 
 `quick` is a single local run. It plans once, refreshes target Git metadata once,
-starts async review shards, and merges proposal artifacts into a sibling
-workspace folder named `<repo>.pksweeper/items`. It does not schedule itself or
-run 24/7.
+starts async review shards, merges proposal artifacts into a sibling workspace
+folder named `<repo>.pksweeper/items`, then writes maintainer-facing
+`quick-summary.md`, `todo.md`, and `plan.md`. It does not schedule itself or run
+24/7.
 
 Defaults:
 

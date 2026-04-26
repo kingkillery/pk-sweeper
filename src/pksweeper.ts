@@ -2086,7 +2086,9 @@ function targetDirtyStatus(targetDir: string, ignoredPaths: string[] = []): stri
     .split("\n")
     .filter((line) => {
       const path = line.slice(3).replaceAll("\\", "/");
-      return !ignoredPrefixes.some((prefix) => path === prefix.slice(0, -1) || path.startsWith(prefix));
+      return !ignoredPrefixes.some(
+        (prefix) => path === prefix.slice(0, -1) || path.startsWith(prefix),
+      );
     })
     .join("\n");
 }
@@ -3180,6 +3182,174 @@ function defaultQuickWorkspace(targetDir: string): string {
   return join(dirname(targetDir), `${basename(targetDir)}.pksweeper`);
 }
 
+interface QuickReport {
+  number: number;
+  kind: ItemKind;
+  title: string;
+  url: string;
+  decision: string;
+  closeReason: string;
+  confidence: string;
+  action: string;
+  reviewStatus: string;
+  summary: string;
+  bestSolution: string;
+  path: string;
+}
+
+function oneLine(text: string, fallback = "No summary provided."): string {
+  const line = text
+    .split("\n")
+    .map((part) => part.trim())
+    .find(Boolean);
+  return line ? line.replace(/\s+/g, " ") : fallback;
+}
+
+function quickReportFromMarkdown(path: string): QuickReport {
+  const markdown = readFileSync(path, "utf8");
+  return {
+    number: Number(frontMatterValue(markdown, "number") ?? basename(path).replace(/\.md$/, "")),
+    kind: (frontMatterValue(markdown, "type") as ItemKind | undefined) ?? "issue",
+    title: frontMatterValue(markdown, "title") ?? `#${basename(path).replace(/\.md$/, "")}`,
+    url: frontMatterValue(markdown, "url") ?? "",
+    decision: frontMatterValue(markdown, "decision") ?? "unknown",
+    closeReason: frontMatterValue(markdown, "close_reason") ?? "unknown",
+    confidence: frontMatterValue(markdown, "confidence") ?? "unknown",
+    action: frontMatterValue(markdown, "action_taken") ?? "unknown",
+    reviewStatus: effectiveReviewStatus(markdown),
+    summary: oneLine(sectionValue(markdown, "Summary")),
+    bestSolution: oneLine(sectionValue(markdown, "Best Possible Solution")),
+    path,
+  };
+}
+
+function quickReportBucket(report: QuickReport): string {
+  if (report.reviewStatus !== "complete") return "Failed reviews";
+  if (report.action === "proposed_close" || report.decision === "close") return "Close candidates";
+  if (report.kind === "pull_request") return "PR actions";
+  if (report.confidence === "high" || report.confidence === "medium") return "Fix now";
+  if (/repro|reproduce|reproduction/i.test(`${report.summary} ${report.bestSolution}`)) {
+    return "Needs reproduction";
+  }
+  return "Needs maintainer decision";
+}
+
+function quickReportLine(report: QuickReport, workspace: string): string {
+  const item = report.url ? markdownLink(`#${report.number}`, report.url) : `#${report.number}`;
+  const reportPath = relative(workspace, report.path).replaceAll("\\", "/");
+  const localReport = markdownLink("report", reportPath);
+  return `- [ ] ${item} ${displayTitle(report.title)} - ${report.summary} (${report.confidence}; ${localReport})`;
+}
+
+function quickBucketSections(reports: QuickReport[], workspace: string): string {
+  const bucketOrder = [
+    "Close candidates",
+    "Fix now",
+    "PR actions",
+    "Needs reproduction",
+    "Needs maintainer decision",
+    "Failed reviews",
+  ];
+  return bucketOrder
+    .map((bucket) => {
+      const bucketReports = reports.filter((report) => quickReportBucket(report) === bucket);
+      const body = bucketReports.length
+        ? bucketReports.map((report) => quickReportLine(report, workspace)).join("\n")
+        : "_None._";
+      return `## ${bucket}\n\n${body}`;
+    })
+    .join("\n\n");
+}
+
+function renderQuickSummary(options: {
+  reports: QuickReport[];
+  missingNumbers: number[];
+  failedShards: number;
+  workspace: string;
+  model: string;
+  reasoningEffort: string;
+}): string {
+  const counts = new Map<string, number>();
+  for (const report of options.reports) {
+    const bucket = quickReportBucket(report);
+    counts.set(bucket, (counts.get(bucket) ?? 0) + 1);
+  }
+  const countLine = [
+    `Reviewed reports: ${options.reports.length}`,
+    `Missing reports: ${options.missingNumbers.length}`,
+    `Failed shard processes: ${options.failedShards}`,
+    `Model: ${options.model}`,
+    `Reasoning: ${options.reasoningEffort}`,
+  ].join("\n");
+  const bucketLine = [
+    "Close candidates",
+    "Fix now",
+    "PR actions",
+    "Needs reproduction",
+    "Needs maintainer decision",
+    "Failed reviews",
+  ]
+    .map((bucket) => `- ${bucket}: ${counts.get(bucket) ?? 0}`)
+    .join("\n");
+  const missing = options.missingNumbers.length
+    ? `\n\n## Missing Reports\n\n${options.missingNumbers.map((number) => `- #${number}`).join("\n")}`
+    : "";
+  return `# Quick Sweep Summary\n\n${countLine}\n\n## Buckets\n\n${bucketLine}\n\n${quickBucketSections(options.reports, options.workspace)}${missing}\n`;
+}
+
+function renderQuickTodo(reports: QuickReport[], workspace: string): string {
+  return `# Quick Sweep TODO\n\n${quickBucketSections(reports, workspace)}\n`;
+}
+
+function renderQuickPlan(reports: QuickReport[], workspace: string): string {
+  const closeCount = reports.filter(
+    (report) => quickReportBucket(report) === "Close candidates",
+  ).length;
+  const fixCount = reports.filter((report) => quickReportBucket(report) === "Fix now").length;
+  const prCount = reports.filter((report) => quickReportBucket(report) === "PR actions").length;
+  return `# Quick Sweep Plan\n\n## 1. Triage Closures\n\nReview ${closeCount} close candidate(s). Apply only high-confidence proposals whose GitHub snapshot has not changed.\n\n## 2. Fix Confirmed Work\n\nReview ${fixCount} issue(s) with enough evidence to turn into implementation tasks.\n\n## 3. Process PRs\n\nReview ${prCount} PR action item(s): merge, request changes, rebase, or close as superseded.\n\n## 4. Ask For Missing Information\n\nUse the TODO list for reproduction requests and maintainer-decision items.\n\n## Source Buckets\n\n${quickBucketSections(reports, workspace)}\n`;
+}
+
+function writeQuickOutputs(options: {
+  workspace: string;
+  itemsDir: string;
+  plannedNumbers: number[];
+  failedShards: number;
+  model: string;
+  reasoningEffort: string;
+}): void {
+  const planned = new Set(options.plannedNumbers);
+  const reports = markdownFiles(options.itemsDir)
+    .map((file) => join(options.itemsDir, file))
+    .map((path) => quickReportFromMarkdown(path))
+    .filter((report) => planned.has(report.number))
+    .sort((left, right) => left.number - right.number);
+  const reported = new Set(reports.map((report) => report.number));
+  const missingNumbers = options.plannedNumbers.filter((number) => !reported.has(number));
+  writeFileSync(
+    join(options.workspace, "quick-summary.md"),
+    renderQuickSummary({
+      reports,
+      missingNumbers,
+      failedShards: options.failedShards,
+      workspace: options.workspace,
+      model: options.model,
+      reasoningEffort: options.reasoningEffort,
+    }),
+    "utf8",
+  );
+  writeFileSync(
+    join(options.workspace, "todo.md"),
+    renderQuickTodo(reports, options.workspace),
+    "utf8",
+  );
+  writeFileSync(
+    join(options.workspace, "plan.md"),
+    renderQuickPlan(reports, options.workspace),
+    "utf8",
+  );
+}
+
 function runChild(command: string, args: string[], options: { cwd: string }): Promise<number> {
   return new Promise((resolvePromise) => {
     const child = spawn(command, args, {
@@ -3200,7 +3370,7 @@ async function runLimited<T>(
   limit: number,
   task: (item: T, index: number) => Promise<number>,
 ): Promise<number[]> {
-  const results = new Array<number>(items.length).fill(1);
+  const results = Array.from<number>({ length: items.length }).fill(1);
   let next = 0;
   const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
     while (next < items.length) {
@@ -3226,7 +3396,9 @@ async function quickCommand(args: Args): Promise<void> {
   const legacyWorkspace = join(targetDir, ".pksweeper");
   const itemsDir = resolve(stringArg(args.items_dir, join(workspace, "items")));
   const closedDir = resolve(stringArg(args.closed_dir, join(workspace, "closed")));
-  const artifactDir = resolve(stringArg(args.artifact_dir, join(workspace, "artifacts", "reviews")));
+  const artifactDir = resolve(
+    stringArg(args.artifact_dir, join(workspace, "artifacts", "reviews")),
+  );
   const batchSize = numberArg(args.batch_size, 1);
   const maxPages = numberArg(args.max_pages, 25);
   const requestedAgents = numberArg(args.agents, numberArg(args.shard_count, 50));
@@ -3277,9 +3449,7 @@ async function quickCommand(args: Args): Promise<void> {
   const statuses = await runLimited(activeShards, concurrency, async (shard) => {
     const shardArtifactDir = join(artifactDir, `shard-${shard.shard}`);
     ensureDir(shardArtifactDir);
-    console.error(
-      `[quick] starting shard ${shard.shard} with ${shard.itemNumbers.length} item(s)`,
-    );
+    console.error(`[quick] starting shard ${shard.shard} with ${shard.itemNumbers.length} item(s)`);
     return runChild(
       process.execPath,
       [
@@ -3331,8 +3501,19 @@ async function quickCommand(args: Args): Promise<void> {
   });
 
   const failed = statuses.filter((status) => status !== 0).length;
+  writeQuickOutputs({
+    workspace,
+    itemsDir,
+    plannedNumbers: plan.candidates.map((item) => item.number),
+    failedShards: failed,
+    model,
+    reasoningEffort,
+  });
   console.error(
     `[quick] merged artifacts into ${itemsDir}; completed_shards=${statuses.length - failed} failed_shards=${failed}`,
+  );
+  console.error(
+    `[quick] wrote ${join(workspace, "quick-summary.md")}, ${join(workspace, "todo.md")}, and ${join(workspace, "plan.md")}`,
   );
   if (failed > 0) process.exit(1);
 }
