@@ -234,10 +234,10 @@ npx pk-sweeper quick
 ```
 
 `quick` is a single local run. It plans once, refreshes target Git metadata once,
-starts async review shards, merges proposal artifacts into a sibling workspace
-folder named `<repo>.pksweeper/items`, then writes maintainer-facing
-`quick-summary.md`, `todo.md`, and `plan.md`. It does not schedule itself or run
-24/7.
+reviews open issues and PRs now, starts async review shards, merges proposal
+artifacts into a sibling workspace folder named `<repo>.pksweeper/items`, then
+writes maintainer-facing `quick-summary.md`, `todo.md`, and `plan.md`. It does
+not schedule itself or run 24/7.
 
 Defaults:
 
@@ -248,6 +248,10 @@ Defaults:
 - `--codex-sandbox read-only`
 - `--max-pages 25`
 - `--workspace ../<repo>.pksweeper`
+
+By default quick mode ignores prior-review cadence so repeated manual runs still
+review open items. Use `--respect-cadence` when you want long-running sweeper
+cadence behavior.
 
 Example with more sub-agents:
 

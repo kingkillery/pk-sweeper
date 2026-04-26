@@ -426,7 +426,10 @@ function loadConfig(): SweeperConfig {
 }
 
 const CONFIG = loadConfig();
-const TARGET_REPO = resolveTargetRepo(CONFIG);
+const HELP_REQUESTED = process.argv
+  .slice(2)
+  .some((arg) => arg === "--help" || arg === "-h" || arg === "help");
+const TARGET_REPO = HELP_REQUESTED ? "owner/repo" : resolveTargetRepo(CONFIG);
 const REPORT_REPO = process.env.GITHUB_REPOSITORY ?? CONFIG.reportRepo ?? TARGET_REPO;
 const PLUGIN_ECOSYSTEM: { name: string; url: string } | null = CONFIG.pluginEcosystem ?? null;
 const PLUGIN_ECOSYSTEM_NAME: string = PLUGIN_ECOSYSTEM?.name ?? "plugin ecosystem";
@@ -1484,9 +1487,10 @@ function dueCandidate(
   itemsDir: string,
   now = Date.now(),
   reviewPolicy?: string,
+  force = false,
 ): DueCandidate | null {
   const review = existingReview(item.number, itemsDir);
-  if (!shouldReviewItem(item, review, now, reviewPolicy)) return null;
+  if (!force && !shouldReviewItem(item, review, now, reviewPolicy)) return null;
   return {
     item,
     review,
@@ -1826,6 +1830,7 @@ function planCandidates(options: {
   itemNumber?: number;
   reviewPolicy: string;
   hotIntake?: boolean;
+  force?: boolean;
 }): { shards: PlanShard[]; scannedPages: number; candidates: Item[] } {
   if (options.itemNumber) {
     const { item, state } = fetchItem(options.itemNumber);
@@ -1844,7 +1849,13 @@ function planCandidates(options: {
     const { items, pagesScanned } = fetchHotIntakeItems(options.maxPages);
     for (const item of items) {
       if (!shouldPlanItem(item)) continue;
-      const candidate = dueCandidate(item, options.itemsDir, now, options.reviewPolicy);
+      const candidate = dueCandidate(
+        item,
+        options.itemsDir,
+        now,
+        options.reviewPolicy,
+        options.force,
+      );
       if (candidate) due.push(candidate);
     }
     const candidates = due
@@ -1867,7 +1878,13 @@ function planCandidates(options: {
     if (items.length === 0) break;
     for (const item of items) {
       if (!shouldPlanItem(item)) continue;
-      const candidate = dueCandidate(item, options.itemsDir, now, options.reviewPolicy);
+      const candidate = dueCandidate(
+        item,
+        options.itemsDir,
+        now,
+        options.reviewPolicy,
+        options.force,
+      );
       if (candidate) due.push(candidate);
     }
   }
@@ -3430,6 +3447,7 @@ async function quickCommand(args: Args): Promise<void> {
   };
   if (itemNumber) planOptions.itemNumber = itemNumber;
   if (hotIntake) planOptions.hotIntake = true;
+  if (!boolArg(args.respect_cadence)) planOptions.force = true;
   const plan = planCandidates(planOptions);
   const activeShards = plan.shards.filter((shard) => shard.itemNumbers.length > 0);
   writeFileSync(
@@ -4411,10 +4429,41 @@ function checkCommand(): void {
   console.log("ok");
 }
 
+function helpCommand(): void {
+  console.log(`pk-sweeper
+
+Usage:
+  pk-sweeper quick [--repo owner/repo] [--agents 50] [--concurrency 50]
+  pk-sweeper plan [--repo owner/repo]
+  pk-sweeper review [--repo owner/repo]
+  pk-sweeper apply-decisions [--repo owner/repo]
+
+Quick mode:
+  Reviews open GitHub issues and PRs now, using 50 async Codex shards by default.
+  Writes reports and maintainer-facing output to a sibling workspace:
+    <repo>.pksweeper/quick-summary.md
+    <repo>.pksweeper/todo.md
+    <repo>.pksweeper/plan.md
+
+Useful quick options:
+  --repo owner/repo              Target GitHub repository.
+  --agents N                    Number of planned shards. Default: 50.
+  --concurrency N               Concurrent shard processes. Default: same as agents.
+  --batch-size N                Items per shard. Default: 1.
+  --max-pages N                 GitHub open item pages to scan. Default: 25.
+  --codex-model MODEL           Codex model. Default: gpt-5.4-mini.
+  --workspace PATH              Output workspace. Default: sibling <repo>.pksweeper.
+  --respect-cadence             Skip items that were recently reviewed.
+  --help, -h                    Show this help without scanning GitHub.
+`);
+}
+
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const args = parseArgs(argv);
   const command = args._[0] ?? "review";
-  if (command === "plan") planCommand(args);
+  if (command === "help" || command === "-h" || boolArg(args.help) || boolArg(args.h))
+    helpCommand();
+  else if (command === "plan") planCommand(args);
   else if (command === "review") reviewCommand(args);
   else if (command === "quick" || command === "run") await quickCommand(args);
   else if (command === "apply-artifacts") applyArtifactsCommand(args);
