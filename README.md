@@ -48,66 +48,66 @@ Maintainer-authored items are never auto-closed. Everything else stays open.
 
 ## Dashboard
 
-Last dashboard update: Apr 26, 2026, 03:25 UTC
+Last dashboard update: Apr 26, 2026, 04:01 UTC
 
 ### Current Run
 
 <!-- clawsweeper-status:start -->
 **Workflow status**
 
-Updated: Apr 26, 2026, 03:25 UTC
+Updated: Apr 26, 2026, 04:01 UTC
 
-State: Review in progress
+State: Apply finished
 
-Planned 250 items across 50 shards. Capacity is 250 items. Review shards are starting; publish will merge artifacts when they finish.
-Run: [https://github.com/openclaw/clawsweeper/actions/runs/24947197598](https://github.com/openclaw/clawsweeper/actions/runs/24947197598)
+Apply/comment-sync run finished with 20 fresh closes out of requested limit 20. See apply-report.json for per-item results.
+Run: [https://github.com/openclaw/clawsweeper/actions/runs/24947732166](https://github.com/openclaw/clawsweeper/actions/runs/24947732166)
 <!-- clawsweeper-status:end -->
 
 ### Queue
 
 | Metric | Count |
 | --- | ---: |
-| Open issues in [openclaw/openclaw](https://github.com/openclaw/openclaw) | 5024 |
-| Open PRs in [openclaw/openclaw](https://github.com/openclaw/openclaw) | 4240 |
-| Open items total | 9264 |
-| Reviewed files | 9097 |
-| Unreviewed open items | 167 |
-| Archived closed files | 10200 |
+| Open issues in [openclaw/openclaw](https://github.com/openclaw/openclaw) | 4811 |
+| Open PRs in [openclaw/openclaw](https://github.com/openclaw/openclaw) | 4222 |
+| Open items total | 9033 |
+| Reviewed files | 8856 |
+| Unreviewed open items | 177 |
+| Archived closed files | 10441 |
 
 ### Review Outcomes
 
 | Metric | Count |
 | --- | ---: |
-| Fresh reviewed issues in the last 7 days | 4954 |
-| Proposed issue closes | 637 (12.9% of reviewed issues) |
-| Fresh reviewed PRs in the last 7 days | 4117 |
-| Proposed PR closes | 126 (3.1% of reviewed PRs) |
-| Fresh verified reviews in the last 7 days | 9071 |
-| Proposed closes awaiting apply | 763 (8.4% of fresh reviews) |
-| Closed by Codex apply | 7892 |
-| Failed or stale reviews | 26 |
+| Fresh reviewed issues in the last 7 days | 4738 |
+| Proposed issue closes | 497 (10.5% of reviewed issues) |
+| Fresh reviewed PRs in the last 7 days | 4095 |
+| Proposed PR closes | 157 (3.8% of reviewed PRs) |
+| Fresh verified reviews in the last 7 days | 8833 |
+| Proposed closes awaiting apply | 654 (7.4% of fresh reviews) |
+| Closed by Codex apply | 8092 |
+| Failed or stale reviews | 23 |
 
 ### Cadence
 
 | Metric | Coverage |
 | --- | ---: |
-| Hourly cadence coverage | 9/1024 current (1015 due, 0.9%) |
-| Hourly hot item cadence (<7d) | 9/1024 current (1015 due, 0.9%) |
-| Daily cadence coverage | 5611/5736 current (125 due, 97.8%) |
-| Daily PR cadence | 3571/3659 current (88 due, 97.6%) |
-| Daily new issue cadence (<30d) | 2040/2077 current (37 due, 98.2%) |
-| Weekly older issue cadence | 2332/2337 current (5 due, 99.8%) |
-| Due now by cadence | 1312 |
+| Hourly cadence coverage | 14/1015 current (1001 due, 1.4%) |
+| Hourly hot item cadence (<7d) | 14/1015 current (1001 due, 1.4%) |
+| Daily cadence coverage | 5621/5705 current (84 due, 98.5%) |
+| Daily PR cadence | 3574/3644 current (70 due, 98.1%) |
+| Daily new issue cadence (<30d) | 2047/2061 current (14 due, 99.3%) |
+| Weekly older issue cadence | 2134/2136 current (2 due, 99.9%) |
+| Due now by cadence | 1264 |
 
 ### Latest Run Activity
 
-Latest review: Apr 26, 2026, 03:22 UTC. Latest close: Apr 26, 2026, 03:20 UTC. Latest comment sync: Apr 26, 2026, 03:23 UTC.
+Latest review: Apr 26, 2026, 03:53 UTC. Latest close: Apr 26, 2026, 04:00 UTC. Latest comment sync: Apr 26, 2026, 04:00 UTC.
 
 | Window | Reviews | Close decisions | Keep-open decisions | Failed/stale reviews | Closed | Comments synced | Apply skips |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Last 15 minutes | 250 | 20 | 230 | 0 | 42 | 59 | 3 |
-| Last hour | 999 | 133 | 866 | 3 | 198 | 270 | 3 |
-| Last 24 hours | 11184 | 2577 | 8607 | 40 | 5554 | 383 | 198 |
+| Last 15 minutes | 143 | 34 | 109 | 0 | 81 | 82 | 0 |
+| Last hour | 850 | 156 | 694 | 4 | 256 | 276 | 3 |
+| Last 24 hours | 11021 | 2496 | 8525 | 36 | 5591 | 498 | 192 |
 
 <details>
 <summary>Recently Reviewed (latest 10)</summary>
@@ -116,16 +116,16 @@ Latest review: Apr 26, 2026, 03:22 UTC. Latest close: Apr 26, 2026, 03:20 UTC. L
 
 | Item | Title | Outcome | Status | Reviewed |
 | --- | --- | --- | --- | --- |
-| [#66533](https://github.com/openclaw/openclaw/issues/66533) | [Bug]: WebChat session selector shows main session as “heartbeat” after a while, making /new feel like sessions disappear | [close / proposed_close](https://github.com/openclaw/clawsweeper/blob/main/items/66533.md) | complete | Apr 26, 2026, 03:22 UTC |
-| [#66953](https://github.com/openclaw/openclaw/issues/66953) | [Bug]: delivery-mirror transcript written to wrong agent session in multi-account multi-agent config | [keep_open / kept_open](https://github.com/openclaw/clawsweeper/blob/main/items/66953.md) | complete | Apr 26, 2026, 03:20 UTC |
-| [#66594](https://github.com/openclaw/openclaw/pull/66594) | fix(gateway): register chat run on agent start and enable provider hooks during model warmup | [close / proposed_close](https://github.com/openclaw/clawsweeper/blob/main/items/66594.md) | complete | Apr 26, 2026, 03:20 UTC |
-| [#66561](https://github.com/openclaw/openclaw/issues/66561) | [Bug]: openai-codex SSE stream begins, but embedded run aborts locally and is surfaced as timeout (408) | [keep_open / kept_open](https://github.com/openclaw/clawsweeper/blob/main/items/66561.md) | complete | Apr 26, 2026, 03:19 UTC |
-| [#66485](https://github.com/openclaw/openclaw/pull/66485) | Align context usage display, refresh chat after compaction | [keep_open / kept_open](https://github.com/openclaw/clawsweeper/blob/main/items/66485.md) | complete | Apr 26, 2026, 03:19 UTC |
-| [#66487](https://github.com/openclaw/openclaw/issues/66487) | Heartbeat exec-event prompt drops actual completion payload | [close / proposed_close](https://github.com/openclaw/clawsweeper/blob/main/items/66487.md) | complete | Apr 26, 2026, 03:19 UTC |
-| [#66494](https://github.com/openclaw/openclaw/issues/66494) | Kilocode discovery failure falls back to single-entry static catalog, causing all model_not_found | [keep_open / kept_open](https://github.com/openclaw/clawsweeper/blob/main/items/66494.md) | complete | Apr 26, 2026, 03:19 UTC |
-| [#66546](https://github.com/openclaw/openclaw/pull/66546) | feat(sessions): add transcriptRotateBytes and transcriptMaxLines to cap .jsonl growth | [keep_open / kept_open](https://github.com/openclaw/clawsweeper/blob/main/items/66546.md) | complete | Apr 26, 2026, 03:19 UTC |
-| [#66391](https://github.com/openclaw/openclaw/issues/66391) | [Bug]: TUI tool calls fail with \"The session ID openclaw-tui does not exist\" on local Ollama models | [keep_open / kept_open](https://github.com/openclaw/clawsweeper/blob/main/items/66391.md) | complete | Apr 26, 2026, 03:19 UTC |
-| [#66457](https://github.com/openclaw/openclaw/pull/66457) | fix(logging): implement log file rotation and update related tests | [close / proposed_close](https://github.com/openclaw/clawsweeper/blob/main/items/66457.md) | complete | Apr 26, 2026, 03:19 UTC |
+| [#67817](https://github.com/openclaw/openclaw/issues/67817) | [Bug]: Discord setup: service file doesn't include DISCORD_BOT_TOKEN environment variable | [keep_open / kept_open](https://github.com/openclaw/clawsweeper/blob/main/items/67817.md) | complete | Apr 26, 2026, 03:53 UTC |
+| [#67759](https://github.com/openclaw/openclaw/issues/67759) | WebChat image recognition fails when using coding.dashscope base URL for Qwen models | [keep_open / kept_open](https://github.com/openclaw/clawsweeper/blob/main/items/67759.md) | complete | Apr 26, 2026, 03:53 UTC |
+| [#67826](https://github.com/openclaw/openclaw/pull/67826) | Telegram: harden setup allowFrom and target resolution | [keep_open / kept_open](https://github.com/openclaw/clawsweeper/blob/main/items/67826.md) | complete | Apr 26, 2026, 03:52 UTC |
+| [#67689](https://github.com/openclaw/openclaw/issues/67689) | Feature request: Session management UI (hide/archive/filter sessions) | [close / proposed_close](https://github.com/openclaw/clawsweeper/blob/main/items/67689.md) | complete | Apr 26, 2026, 03:51 UTC |
+| [#67970](https://github.com/openclaw/openclaw/issues/67970) | Feature: built-in memory should support automatic context extraction and daily-log writing | [keep_open / kept_open](https://github.com/openclaw/clawsweeper/blob/main/items/67970.md) | complete | Apr 26, 2026, 03:51 UTC |
+| [#67836](https://github.com/openclaw/openclaw/pull/67836) | feat(memory-core): Memory v2 foundation — sidecar, ingest, rerank (all default-off) | [keep_open / kept_open](https://github.com/openclaw/clawsweeper/blob/main/items/67836.md) | complete | Apr 26, 2026, 03:51 UTC |
+| [#67889](https://github.com/openclaw/openclaw/issues/67889) | Image understanding tool has hardcoded 60s timeout, ignoring configured timeoutSeconds | [keep_open / kept_open](https://github.com/openclaw/clawsweeper/blob/main/items/67889.md) | complete | Apr 26, 2026, 03:51 UTC |
+| [#67952](https://github.com/openclaw/openclaw/pull/67952) | fix(memory-lancedb): get memory records through ltm list command | [keep_open / kept_open](https://github.com/openclaw/clawsweeper/blob/main/items/67952.md) | complete | Apr 26, 2026, 03:51 UTC |
+| [#67946](https://github.com/openclaw/openclaw/pull/67946) | Clear stale subagent lineage on top-level sessions | [keep_open / kept_open](https://github.com/openclaw/clawsweeper/blob/main/items/67946.md) | complete | Apr 26, 2026, 03:51 UTC |
+| [#67943](https://github.com/openclaw/openclaw/issues/67943) | Normal sessions can inherit stale subagent lineage and incorrectly hit sessions_spawn depth limits | [keep_open / kept_open](https://github.com/openclaw/clawsweeper/blob/main/items/67943.md) | complete | Apr 26, 2026, 03:51 UTC |
 
 </details>
 
@@ -184,6 +184,9 @@ another apply run with the same settings.
 `npm run audit` compares live GitHub state with generated records without moving
 files. It reports missing open records, archived open records, stale records,
 duplicates, protected-label proposed closes, and stale review-status records.
+Missing open records are classified as eligible, maintainer-authored, protected,
+or recently created so strict audit mode can flag actionable drift without
+treating expected queue lag or excluded items as failures.
 
 ## Local Run
 
