@@ -981,7 +981,7 @@ function collectRelatedMentions(options: {
     if (typeof value !== "string" || !value.trim()) return;
     const linked = value.matchAll(
       new RegExp(
-        String.raw`github\.com/${TARGET_REPO.replaceAll("/", String.raw`\/`)}/(?:issues|pull)/(\d+)|(?<![\w/])#(\d+)\b`,
+        String.raw`github\.com/${TARGET_REPO}/(?:issues|pull)/(\d+)|(?<![\w/])#(\d+)\b`,
         "g",
       ),
     );
