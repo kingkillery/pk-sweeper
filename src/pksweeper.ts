@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -337,7 +337,13 @@ interface AuditResult {
   };
 }
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const ROOT = resolve(process.env.PKSWEEPER_WORKSPACE ?? process.cwd());
+
+function packageAssetPath(...parts: string[]): string {
+  const workspacePath = join(ROOT, ...parts);
+  return existsSync(workspacePath) ? workspacePath : join(PACKAGE_ROOT, ...parts);
+}
 
 interface SweeperConfig {
   targetRepo?: string;
@@ -771,8 +777,8 @@ function reviewPolicyHash(options: {
       reasoningEffort: options.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
       sandboxMode: options.sandboxMode ?? "read-only",
       serviceTier: options.serviceTier ?? DEFAULT_SERVICE_TIER,
-      prompt: readFileSync(join(ROOT, "prompts", "review-item.md"), "utf8"),
-      schema: readFileSync(join(ROOT, "schema", "pksweeper-decision.schema.json"), "utf8"),
+      prompt: readFileSync(packageAssetPath("prompts", "review-item.md"), "utf8"),
+      schema: readFileSync(packageAssetPath("schema", "pksweeper-decision.schema.json"), "utf8"),
     }),
   ).slice(0, 16);
 }
@@ -1970,7 +1976,7 @@ function promptFor(item: Item, context: ItemContext, git: GitInfo): string {
   const docsUrlLine = DOCS_URL
     ? `When citing docs in the close comment, link the public ${DOCS_URL} page rather than the internal docs GitHub file whenever a public page exists.`
     : "When citing docs in the close comment, link GitHub blob URLs to the relevant docs file.";
-  const rawPrompt = readFileSync(join(ROOT, "prompts", "review-item.md"), "utf8");
+  const rawPrompt = readFileSync(packageAssetPath("prompts", "review-item.md"), "utf8");
   const prompt = rawPrompt
     .replaceAll("{{TARGET_REPO}}", TARGET_REPO)
     .replaceAll("{{REPO_NAME}}", repoName)
@@ -2112,7 +2118,7 @@ function runCodex(options: {
       "-C",
       options.targetDir,
       "--output-schema",
-      join(ROOT, "schema", "pksweeper-decision.schema.json"),
+      packageAssetPath("schema", "pksweeper-decision.schema.json"),
       "--output-last-message",
       outputPath,
       "--sandbox",
@@ -3119,6 +3125,179 @@ function reviewCommand(args: Args): void {
   );
 }
 
+function isGitCheckout(path: string): boolean {
+  return existsSync(join(path, ".git"));
+}
+
+function ensureTargetCheckout(targetDir: string): void {
+  if (isGitCheckout(targetDir)) return;
+  if (existsSync(targetDir) && readdirSync(targetDir).length > 0) {
+    throw new Error(`Target directory exists but is not a git checkout: ${targetDir}`);
+  }
+  ensureDir(dirname(targetDir));
+  console.error(`[quick] cloning ${TARGET_REPO} into ${targetDir}`);
+  run("git", [
+    "clone",
+    "--depth=1",
+    "--branch",
+    "main",
+    "--single-branch",
+    `https://github.com/${TARGET_REPO}.git`,
+    targetDir,
+  ]);
+}
+
+function runChild(command: string, args: string[], options: { cwd: string }): Promise<number> {
+  return new Promise((resolvePromise) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: { ...process.env, PKSWEEPER_WORKSPACE: ROOT, PKSWEEPER_TARGET_REPO: TARGET_REPO },
+      stdio: "inherit",
+    });
+    child.on("error", (error) => {
+      console.error(`[quick] failed to start child process: ${error.message}`);
+      resolvePromise(1);
+    });
+    child.on("close", (code) => resolvePromise(code ?? 1));
+  });
+}
+
+async function runLimited<T>(
+  items: T[],
+  limit: number,
+  task: (item: T, index: number) => Promise<number>,
+): Promise<number[]> {
+  const results = new Array<number>(items.length).fill(1);
+  let next = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      const item = items[index];
+      if (item === undefined) continue;
+      results[index] = await task(item, index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+async function quickCommand(args: Args): Promise<void> {
+  const targetDir =
+    typeof args.target_dir === "string"
+      ? resolve(args.target_dir)
+      : isGitCheckout(process.cwd())
+        ? process.cwd()
+        : resolve(TARGET_REPO.split("/")[1] ?? "target-repo");
+  const workspace = resolve(stringArg(args.workspace, join(targetDir, ".pksweeper")));
+  const itemsDir = resolve(stringArg(args.items_dir, join(workspace, "items")));
+  const closedDir = resolve(stringArg(args.closed_dir, join(workspace, "closed")));
+  const artifactDir = resolve(stringArg(args.artifact_dir, join(workspace, "artifacts", "reviews")));
+  const batchSize = numberArg(args.batch_size, 1);
+  const maxPages = numberArg(args.max_pages, 25);
+  const requestedAgents = numberArg(args.agents, numberArg(args.shard_count, 50));
+  const shardCount = Math.max(1, requestedAgents);
+  const concurrency = Math.max(1, numberArg(args.concurrency, shardCount));
+  const model = stringArg(args.codex_model, "gpt-5.4-mini");
+  const reasoningEffort = stringArg(args.codex_reasoning_effort, "medium");
+  const sandboxMode = stringArg(args.codex_sandbox, "read-only");
+  const serviceTier = stringArg(args.codex_service_tier, DEFAULT_SERVICE_TIER);
+  const timeoutMs = numberArg(args.codex_timeout_ms, 600_000);
+  const hotIntake = boolArg(args.hot_intake);
+  const itemNumber = numberArg(args.item_number, 0) || undefined;
+
+  ensureDir(workspace);
+  ensureDir(itemsDir);
+  ensureDir(closedDir);
+  ensureDir(artifactDir);
+  ensureTargetCheckout(targetDir);
+
+  const reviewPolicy = reviewPolicyHash({ model, reasoningEffort, sandboxMode, serviceTier });
+  const planOptions: Parameters<typeof planCandidates>[0] = {
+    batchSize,
+    maxPages,
+    shardCount,
+    itemsDir,
+    reviewPolicy,
+  };
+  if (itemNumber) planOptions.itemNumber = itemNumber;
+  if (hotIntake) planOptions.hotIntake = true;
+  const plan = planCandidates(planOptions);
+  const activeShards = plan.shards.filter((shard) => shard.itemNumbers.length > 0);
+  writeFileSync(
+    join(workspace, "quick-plan.json"),
+    `${JSON.stringify({ ...plan, reviewPolicy, model, reasoningEffort }, null, 2)}\n`,
+    "utf8",
+  );
+  console.error(
+    `[quick] planned ${plan.candidates.length} item(s) across ${activeShards.length} active shard(s); agents=${shardCount} concurrency=${concurrency} model=${model}`,
+  );
+  if (activeShards.length === 0) {
+    console.error("[quick] no due items selected");
+    return;
+  }
+
+  const cliPath = fileURLToPath(import.meta.url);
+  const statuses = await runLimited(activeShards, concurrency, async (shard) => {
+    const shardArtifactDir = join(artifactDir, `shard-${shard.shard}`);
+    ensureDir(shardArtifactDir);
+    console.error(
+      `[quick] starting shard ${shard.shard} with ${shard.itemNumbers.length} item(s)`,
+    );
+    return runChild(
+      process.execPath,
+      [
+        cliPath,
+        "review",
+        "--repo",
+        TARGET_REPO,
+        "--target-dir",
+        targetDir,
+        "--items-dir",
+        itemsDir,
+        "--artifact-dir",
+        shardArtifactDir,
+        "--batch-size",
+        String(batchSize),
+        "--max-pages",
+        String(maxPages),
+        "--codex-model",
+        model,
+        "--codex-reasoning-effort",
+        reasoningEffort,
+        "--codex-sandbox",
+        sandboxMode,
+        "--codex-service-tier",
+        serviceTier,
+        "--codex-timeout-ms",
+        String(timeoutMs),
+        "--item-numbers",
+        shard.itemNumbers.join(","),
+        "--shard-index",
+        "0",
+        "--shard-count",
+        "1",
+      ],
+      { cwd: ROOT },
+    );
+  });
+
+  applyArtifactsCommand({
+    _: ["apply-artifacts"],
+    artifact_dir: artifactDir,
+    items_dir: itemsDir,
+    closed_dir: closedDir,
+    skip_reconcile: true,
+    skip_dashboard: true,
+  });
+
+  const failed = statuses.filter((status) => status !== 0).length;
+  console.error(
+    `[quick] merged artifacts into ${itemsDir}; completed_shards=${statuses.length - failed} failed_shards=${failed}`,
+  );
+  if (failed > 0) process.exit(1);
+}
+
 function applyDecisionsCommand(args: Args): void {
   const itemsDir = resolve(stringArg(args.items_dir, join(ROOT, "items")));
   const closedDir = resolve(stringArg(args.closed_dir, join(ROOT, "closed")));
@@ -3417,6 +3596,7 @@ function applyArtifactsCommand(args: Args): void {
   const itemsDir = resolve(stringArg(args.items_dir, join(ROOT, "items")));
   const closedDir = resolve(stringArg(args.closed_dir, join(ROOT, "closed")));
   const skipReconcile = boolArg(args.skip_reconcile);
+  const skipDashboard = boolArg(args.skip_dashboard);
   ensureDir(itemsDir);
   ensureDir(closedDir);
   if (existsSync(artifactDir)) {
@@ -3435,7 +3615,7 @@ function applyArtifactsCommand(args: Args): void {
     }
   }
   if (!skipReconcile) reconcileFolders({ itemsDir, closedDir });
-  updateDashboard(itemsDir, closedDir);
+  if (!skipDashboard) updateDashboard(itemsDir, closedDir);
 }
 
 function markdownFiles(dir: string): string[] {
@@ -4005,17 +4185,18 @@ function statusCommand(args: Args): void {
 }
 
 function checkCommand(): void {
-  JSON.parse(readFileSync(join(ROOT, "schema", "pksweeper-decision.schema.json"), "utf8"));
+  JSON.parse(readFileSync(packageAssetPath("schema", "pksweeper-decision.schema.json"), "utf8"));
   if (!existsSync(join(ROOT, ".github", "workflows", "sweep.yml")))
     throw new Error("Missing workflow");
   console.log("ok");
 }
 
-export function main(argv = process.argv.slice(2)): void {
+export async function main(argv = process.argv.slice(2)): Promise<void> {
   const args = parseArgs(argv);
   const command = args._[0] ?? "review";
   if (command === "plan") planCommand(args);
   else if (command === "review") reviewCommand(args);
+  else if (command === "quick" || command === "run") await quickCommand(args);
   else if (command === "apply-artifacts") applyArtifactsCommand(args);
   else if (command === "apply-decisions") applyDecisionsCommand(args);
   else if (command === "audit") auditCommand(args);
@@ -4033,4 +4214,9 @@ export function main(argv = process.argv.slice(2)): void {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+}

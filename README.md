@@ -212,6 +212,51 @@ treating expected queue lag or excluded items as failures.
 
 Requires Node 24. Set `targetRepo` in `sweeper.config.json` first.
 
+### NPM / NPX quick run
+
+Install from this repo:
+
+```bash
+npm install -g github:kingkillery/pk-sweeper
+```
+
+Or run without a global install from inside the target repo checkout:
+
+```bash
+npx github:kingkillery/pk-sweeper quick
+```
+
+After the package is published to npm, the shorter forms work:
+
+```bash
+npm install -g pk-sweeper
+npx pk-sweeper quick
+```
+
+`quick` is a single local run. It plans once, starts async review shards, and
+merges proposal artifacts into `.pksweeper/items`. It does not schedule itself
+or run 24/7.
+
+Defaults:
+
+- `--agents 50`
+- `--batch-size 1`
+- `--codex-model gpt-5.4-mini`
+- `--codex-reasoning-effort medium`
+- `--codex-sandbox read-only`
+- `--max-pages 25`
+
+Example with more sub-agents:
+
+```bash
+npx pk-sweeper quick --repo owner/repo --agents 80 --concurrency 80 --batch-size 1
+```
+
+Prerequisites are the `gh` CLI authenticated for the target repository and a
+logged-in `codex` CLI. Free or alternate model providers can be used only to the
+extent the local `codex` CLI is already configured to use them; pk-sweeper does
+not keep a background worker alive for token reasons.
+
 ```bash
 source ~/.profile
 npm install
