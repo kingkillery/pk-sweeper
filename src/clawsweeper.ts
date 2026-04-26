@@ -340,7 +340,7 @@ interface AuditResult {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 interface SweeperConfig {
-  targetRepo: string;
+  targetRepo?: string;
   reportRepo?: string;
   docsUrl?: string | null;
   pluginEcosystem?: { name: string; url: string } | null;
@@ -348,27 +348,79 @@ interface SweeperConfig {
   protectedLabels?: string[];
 }
 
+export function parseRepoFlag(argv: string[]): string | undefined {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    const next = argv[i + 1];
+    if (arg === "--repo" && next && !next.startsWith("--")) {
+      return next;
+    }
+    if (arg && arg.startsWith("--repo=")) {
+      return arg.slice("--repo=".length);
+    }
+  }
+  return undefined;
+}
+
+export function parseGitRemoteUrl(url: string): string | undefined {
+  // ssh: git@github.com:owner/repo.git or git@github.com:owner/repo
+  const sshMatch = url.match(/^git@github\.com:([^/]+\/[^/]+?)(?:\.git)?$/);
+  if (sshMatch?.[1]) return sshMatch[1];
+  // https: https://github.com/owner/repo.git or https://github.com/owner/repo
+  const httpsMatch = url.match(/^https?:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?$/);
+  if (httpsMatch?.[1]) return httpsMatch[1];
+  return undefined;
+}
+
+export function detectTargetRepoFromGit(): string | undefined {
+  try {
+    const result = spawnSync("git", ["remote", "get-url", "origin"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (result.status !== 0 || !result.stdout) return undefined;
+    return parseGitRemoteUrl(result.stdout.trim());
+  } catch {
+    // ignore errors
+  }
+  return undefined;
+}
+
+function resolveTargetRepo(config: SweeperConfig): string {
+  // Priority: --repo flag > CLAWSWEEPER_TARGET_REPO env var > config file > git remote auto-detection
+  const fromFlag = parseRepoFlag(process.argv.slice(2));
+  if (fromFlag) return fromFlag;
+  const fromEnv = process.env.CLAWSWEEPER_TARGET_REPO ?? process.env.GH_REPO;
+  if (fromEnv && fromEnv.includes("/")) return fromEnv;
+  if (typeof config.targetRepo === "string" && config.targetRepo.includes("/")) {
+    return config.targetRepo;
+  }
+  const fromGit = detectTargetRepoFromGit();
+  if (fromGit) return fromGit;
+  throw new Error(
+    "Could not determine target repository. Specify it via one of:\n" +
+      '  • sweeper.config.json: { "targetRepo": "owner/repo" }\n' +
+      "  • --repo owner/repo CLI flag\n" +
+      "  • CLAWSWEEPER_TARGET_REPO=owner/repo environment variable\n" +
+      "  • GH_REPO=owner/repo environment variable\n" +
+      "  • Running from inside a local git repo with a GitHub remote origin",
+  );
+}
+
 function loadConfig(): SweeperConfig {
   const configPath = join(ROOT, "sweeper.config.json");
   if (!existsSync(configPath)) {
-    throw new Error(
-      `sweeper.config.json not found in ${ROOT}. ` +
-        `Create it with at least: { "targetRepo": "owner/repo" }`,
-    );
+    return {};
   }
   const raw: unknown = JSON.parse(readFileSync(configPath, "utf8"));
   if (typeof raw !== "object" || raw === null) {
     throw new Error("sweeper.config.json must be a JSON object");
   }
-  const config = raw as SweeperConfig;
-  if (typeof config.targetRepo !== "string" || !config.targetRepo.includes("/")) {
-    throw new Error('sweeper.config.json must have a valid "targetRepo" field, e.g. "owner/repo"');
-  }
-  return config;
+  return raw as SweeperConfig;
 }
 
 const CONFIG = loadConfig();
-const TARGET_REPO = CONFIG.targetRepo;
+const TARGET_REPO = resolveTargetRepo(CONFIG);
 const REPORT_REPO = process.env.GITHUB_REPOSITORY ?? CONFIG.reportRepo ?? TARGET_REPO;
 const PLUGIN_ECOSYSTEM: { name: string; url: string } | null = CONFIG.pluginEcosystem ?? null;
 const PLUGIN_ECOSYSTEM_NAME: string = PLUGIN_ECOSYSTEM?.name ?? "plugin ecosystem";
@@ -2961,7 +3013,7 @@ function planCommand(args: Args): void {
 
 function reviewCommand(args: Args): void {
   const targetDir = resolve(
-    stringArg(args.target_dir ?? args.openclaw_dir, `../${CONFIG.targetRepo.split("/")[1]}`),
+    stringArg(args.target_dir ?? args.openclaw_dir, `../${TARGET_REPO.split("/")[1]}`),
   );
   const artifactDir = resolve(stringArg(args.artifact_dir, "artifacts/reviews"));
   const itemsDir = resolve(stringArg(args.items_dir, join(ROOT, "items")));
