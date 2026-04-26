@@ -12,7 +12,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, delimiter, dirname, join, relative, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 type ItemKind = "issue" | "pull_request";
@@ -538,6 +538,39 @@ function pathListArg(value: string | boolean | string[] | undefined): string[] {
 
 function absoluteArgPath(path: string): string {
   return resolve(path);
+}
+
+function executableCandidates(name: string): string[] {
+  const names =
+    process.platform === "win32" ? [`${name}.cmd`, `${name}.exe`, `${name}.ps1`, name] : [name];
+  const pathDirs = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
+  const candidates = pathDirs.flatMap((dir) => names.map((entry) => join(dir, entry)));
+  if (process.platform === "win32" && process.env.APPDATA) {
+    candidates.push(...names.map((entry) => join(process.env.APPDATA as string, "npm", entry)));
+  }
+  const seen = new Set<string>();
+  return candidates.filter((candidate) => {
+    const normalized = candidate.toLowerCase();
+    if (seen.has(normalized)) return false;
+    seen.add(normalized);
+    return true;
+  });
+}
+
+function resolveExecutable(command: string): string | undefined {
+  if (isAbsolute(command) || command.includes("\\") || command.includes("/")) {
+    return existsSync(command) ? command : undefined;
+  }
+  return executableCandidates(command).find((candidate) => existsSync(candidate));
+}
+
+function resolveCodexBin(value?: string): string {
+  const configured = value || process.env.PKSWEEPER_CODEX_BIN || process.env.CODEX_BIN;
+  const resolved = configured ? resolveExecutable(configured) : resolveExecutable("codex");
+  if (resolved) return resolved;
+  throw new Error(
+    "Could not find the Codex CLI executable. Install @openai/codex globally, add codex to PATH, or pass --codex-bin /absolute/path/to/codex.",
+  );
 }
 
 export function itemNumbersArg(
@@ -2136,6 +2169,7 @@ function runCodex(options: {
   serviceTier: string;
   timeoutMs: number;
   workDir: string;
+  codexBin: string;
   dirtyIgnorePaths?: string[];
 }): Decision {
   ensureDir(options.workDir);
@@ -2149,7 +2183,7 @@ function runCodex(options: {
     );
   }
   const result = spawnSync(
-    "codex",
+    options.codexBin,
     [
       "exec",
       "-m",
@@ -3076,6 +3110,7 @@ function reviewCommand(args: Args): void {
   const reasoningEffort = stringArg(args.codex_reasoning_effort, DEFAULT_REASONING_EFFORT);
   const sandboxMode = stringArg(args.codex_sandbox, "read-only");
   const serviceTier = stringArg(args.codex_service_tier, DEFAULT_SERVICE_TIER);
+  const codexBin = resolveCodexBin(typeof args.codex_bin === "string" ? args.codex_bin : undefined);
   const timeoutMs = numberArg(args.codex_timeout_ms, 600_000);
   const shardIndex = numberArg(args.shard_index, 0);
   const shardCount = numberArg(args.shard_count, 1);
@@ -3142,6 +3177,7 @@ function reviewCommand(args: Args): void {
         serviceTier,
         timeoutMs,
         workDir: join(artifactDir, "codex"),
+        codexBin,
         dirtyIgnorePaths,
       });
     } catch (error) {
@@ -3437,6 +3473,7 @@ async function quickCommand(args: Args): Promise<void> {
   const reasoningEffort = stringArg(args.codex_reasoning_effort, "medium");
   const sandboxMode = stringArg(args.codex_sandbox, "read-only");
   const serviceTier = stringArg(args.codex_service_tier, DEFAULT_SERVICE_TIER);
+  const codexBin = resolveCodexBin(typeof args.codex_bin === "string" ? args.codex_bin : undefined);
   const timeoutMs = numberArg(args.codex_timeout_ms, 600_000);
   const hotIntake = boolArg(args.hot_intake);
   const itemNumber = numberArg(args.item_number, 0) || undefined;
@@ -3446,6 +3483,7 @@ async function quickCommand(args: Args): Promise<void> {
   ensureDir(closedDir);
   ensureDir(artifactDir);
   ensureTargetCheckout(targetDir);
+  console.error(`[quick] using Codex executable: ${codexBin}`);
   console.error("[quick] refreshing target git metadata before starting shards");
   gitInfo(targetDir);
 
@@ -3506,6 +3544,8 @@ async function quickCommand(args: Args): Promise<void> {
         sandboxMode,
         "--codex-service-tier",
         serviceTier,
+        "--codex-bin",
+        codexBin,
         "--codex-timeout-ms",
         String(timeoutMs),
         "--item-numbers",
@@ -4465,6 +4505,7 @@ Useful quick options:
   --batch-size N                Items per shard. Default: 1.
   --max-pages N                 GitHub open item pages to scan. Default: 25.
   --codex-model MODEL           Codex model. Default: gpt-5.4-mini.
+  --codex-bin PATH              Codex executable. Also supports PKSWEEPER_CODEX_BIN.
   --workspace PATH              Output workspace. Default: sibling <repo>.pksweeper.
   --respect-cadence             Skip items that were recently reviewed.
   --respect-exclusions          Skip maintainer-authored and protected-label items.

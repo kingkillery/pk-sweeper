@@ -249,6 +249,10 @@ Defaults:
 - `--max-pages 25`
 - `--workspace ../<repo>.pksweeper`
 
+If `codex` is not visible to non-interactive `npx` child processes, set
+`PKSWEEPER_CODEX_BIN` or pass `--codex-bin` with the absolute path to the Codex
+CLI.
+
 By default quick mode ignores prior-review cadence so repeated manual runs still
 review open items. Use `--respect-cadence` when you want long-running sweeper
 cadence behavior.
