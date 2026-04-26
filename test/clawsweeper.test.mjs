@@ -11,6 +11,7 @@ import {
   isProtectedItem,
   itemNumbersArg,
   parseDecision,
+  parseGitRemoteUrl,
   parseRepoFlag,
   protectedLabels,
   relatedTitleSearchTerms,
@@ -521,6 +522,22 @@ test("parseRepoFlag extracts repo from --repo flag", () => {
   assert.equal(parseRepoFlag([]), undefined);
   // --repo followed by another flag is ignored (no value)
   assert.equal(parseRepoFlag(["--repo", "--other"]), undefined);
+});
+
+test("parseGitRemoteUrl parses SSH and HTTPS GitHub remote URLs", () => {
+  // SSH formats
+  assert.equal(parseGitRemoteUrl("git@github.com:owner/repo.git"), "owner/repo");
+  assert.equal(parseGitRemoteUrl("git@github.com:owner/repo"), "owner/repo");
+  assert.equal(parseGitRemoteUrl("git@github.com:myorg/myrepo.git"), "myorg/myrepo");
+  // HTTPS formats
+  assert.equal(parseGitRemoteUrl("https://github.com/owner/repo.git"), "owner/repo");
+  assert.equal(parseGitRemoteUrl("https://github.com/owner/repo"), "owner/repo");
+  assert.equal(parseGitRemoteUrl("http://github.com/owner/repo"), "owner/repo");
+  // Non-GitHub or malformed URLs return undefined
+  assert.equal(parseGitRemoteUrl("https://gitlab.com/owner/repo.git"), undefined);
+  assert.equal(parseGitRemoteUrl("not-a-url"), undefined);
+  // Trailing paths are rejected (stricter matching)
+  assert.equal(parseGitRemoteUrl("https://github.com/owner/repo/issues"), undefined);
 });
 
 test("detectTargetRepoFromGit parses GitHub remote URLs", () => {

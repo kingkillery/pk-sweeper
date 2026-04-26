@@ -351,13 +351,24 @@ interface SweeperConfig {
 export function parseRepoFlag(argv: string[]): string | undefined {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === "--repo" && argv[i + 1] && !argv[i + 1]!.startsWith("--")) {
-      return argv[i + 1];
+    const next = argv[i + 1];
+    if (arg === "--repo" && next && !next.startsWith("--")) {
+      return next;
     }
     if (arg && arg.startsWith("--repo=")) {
       return arg.slice("--repo=".length);
     }
   }
+  return undefined;
+}
+
+export function parseGitRemoteUrl(url: string): string | undefined {
+  // ssh: git@github.com:owner/repo.git or git@github.com:owner/repo
+  const sshMatch = url.match(/^git@github\.com:([^/]+\/[^/]+?)(?:\.git)?$/);
+  if (sshMatch?.[1]) return sshMatch[1];
+  // https: https://github.com/owner/repo.git or https://github.com/owner/repo
+  const httpsMatch = url.match(/^https?:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?$/);
+  if (httpsMatch?.[1]) return httpsMatch[1];
   return undefined;
 }
 
@@ -368,13 +379,7 @@ export function detectTargetRepoFromGit(): string | undefined {
       stdio: ["ignore", "pipe", "pipe"],
     });
     if (result.status !== 0 || !result.stdout) return undefined;
-    const url = result.stdout.trim();
-    // ssh: git@github.com:owner/repo.git
-    const sshMatch = url.match(/git@github\.com:([^/]+\/[^/]+?)(?:\.git)?$/);
-    if (sshMatch?.[1]) return sshMatch[1];
-    // https: https://github.com/owner/repo.git or https://github.com/owner/repo
-    const httpsMatch = url.match(/github\.com\/([^/]+\/[^/]+?)(?:\.git)?(?:\/.*)?$/);
-    if (httpsMatch?.[1]) return httpsMatch[1];
+    return parseGitRemoteUrl(result.stdout.trim());
   } catch {
     // ignore errors
   }
