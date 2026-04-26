@@ -573,6 +573,55 @@ function resolveCodexBin(value?: string): string {
   );
 }
 
+function needsWindowsCommandShell(command: string): boolean {
+  return process.platform === "win32" && /\.(?:cmd|bat)$/i.test(command);
+}
+
+function codexSpawnSync(
+  command: string,
+  args: string[],
+  options: {
+    cwd: string;
+    env?: NodeJS.ProcessEnv;
+    input?: string;
+    timeout?: number;
+    maxBuffer?: number;
+  },
+): ReturnType<typeof spawnSync> {
+  return spawnSync(command, args, {
+    cwd: options.cwd,
+    encoding: "utf8",
+    env: options.env,
+    input: options.input,
+    maxBuffer: options.maxBuffer,
+    timeout: options.timeout,
+    shell: needsWindowsCommandShell(command) ? (process.env.ComSpec ?? true) : false,
+  });
+}
+
+function preflightCodexBin(command: string, cwd: string): void {
+  const result = codexSpawnSync(command, ["--version"], {
+    cwd,
+    env: process.env,
+    timeout: 30_000,
+    maxBuffer: 1024 * 1024,
+  });
+  if (result.error || result.status !== 0) {
+    throw new Error(
+      `Codex CLI preflight failed for ${command}: ${
+        result.error?.message ??
+        safeOutputTail(spawnOutputText(result.stderr)) ??
+        `exit ${result.status}`
+      }`,
+    );
+  }
+}
+
+function spawnOutputText(value: string | Buffer | null | undefined): string {
+  if (Buffer.isBuffer(value)) return value.toString("utf8");
+  return value ?? "";
+}
+
 export function itemNumbersArg(
   itemNumbers: string | boolean | string[] | undefined,
   itemNumber: string | boolean | string[] | undefined,
@@ -2182,7 +2231,7 @@ function runCodex(options: {
       `Target checkout is dirty before reviewing #${options.item.number}:\n${dirtyBefore}`,
     );
   }
-  const result = spawnSync(
+  const result = codexSpawnSync(
     options.codexBin,
     [
       "exec",
@@ -2208,7 +2257,6 @@ function runCodex(options: {
     ],
     {
       cwd: options.targetDir,
-      encoding: "utf8",
       env: codexEnv(),
       input: readFileSync(promptPath, "utf8"),
       maxBuffer: 128 * 1024 * 1024,
@@ -2224,22 +2272,26 @@ function runCodex(options: {
   if (result.error) {
     throw new Error(
       `Codex review failed for #${options.item.number}: ${result.error.message}\n${
-        safeOutputTail(result.stderr) || safeOutputTail(result.stdout) || "No output."
+        safeOutputTail(spawnOutputText(result.stderr)) ||
+        safeOutputTail(spawnOutputText(result.stdout)) ||
+        "No output."
       }`,
     );
   }
   if (result.status !== 0) {
     throw new Error(
-      `Codex review failed for #${options.item.number} with exit ${
-        result.status ?? "unknown"
-      }.\n${safeOutputTail(result.stderr) || safeOutputTail(result.stdout) || "No output."}`,
+      `Codex review failed for #${options.item.number} with exit ${result.status ?? "unknown"}.\n${
+        safeOutputTail(spawnOutputText(result.stderr)) ||
+        safeOutputTail(spawnOutputText(result.stdout)) ||
+        "No output."
+      }`,
     );
   }
   if (!existsSync(outputPath)) {
     const decision = codexFailureDecision(
       result.status,
       `Codex exited successfully but did not write ${outputPath}.`,
-      result.stdout,
+      spawnOutputText(result.stdout),
     );
     throw new Error(
       `Codex review did not produce output for #${options.item.number}: ${decision.evidence
@@ -2255,7 +2307,7 @@ function runCodex(options: {
       `Codex wrote invalid JSON or schema-invalid output to ${outputPath}: ${
         error instanceof Error ? error.message : String(error)
       }`,
-      result.stdout,
+      spawnOutputText(result.stdout),
     );
     throw new Error(
       `Codex review wrote invalid JSON for #${options.item.number}: ${decision.evidence
@@ -3484,6 +3536,7 @@ async function quickCommand(args: Args): Promise<void> {
   ensureDir(artifactDir);
   ensureTargetCheckout(targetDir);
   console.error(`[quick] using Codex executable: ${codexBin}`);
+  preflightCodexBin(codexBin, targetDir);
   console.error("[quick] refreshing target git metadata before starting shards");
   gitInfo(targetDir);
 
