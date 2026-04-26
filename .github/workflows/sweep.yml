@@ -1,4 +1,4 @@
-name: Sweep OpenClaw Items
+name: Sweep Items
 
 on:
   workflow_dispatch:
@@ -103,15 +103,29 @@ jobs:
           path: clawsweeper
           fetch-depth: 0
 
-      - name: Create OpenClaw read token
+      - name: Read sweeper config
+        id: sweeper-config
+        run: |
+          node -e "
+          const fs = require('node:fs');
+          const cfg = JSON.parse(fs.readFileSync('clawsweeper/sweeper.config.json', 'utf8'));
+          const [owner, name] = cfg.targetRepo.split('/');
+          const localDir = cfg.targetRepoLocalDir || name;
+          process.stdout.write('target_owner=' + owner + '\n');
+          process.stdout.write('target_name=' + name + '\n');
+          process.stdout.write('target_local_dir=' + localDir + '\n');
+          process.stdout.write('target_repo=' + cfg.targetRepo + '\n');
+          " >> "$GITHUB_OUTPUT"
+
+      - name: Create target repo read token
         id: openclaw-read-token
         if: ${{ env.CLAWSWEEPER_APP_ID != '' && env.CLAWSWEEPER_APP_PRIVATE_KEY != '' }}
         uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ env.CLAWSWEEPER_APP_ID }}
           private-key: ${{ env.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: openclaw
-          repositories: openclaw
+          owner: ${{ steps.sweeper-config.outputs.target_owner }}
+          repositories: ${{ steps.sweeper-config.outputs.target_name }}
 
       - uses: actions/setup-node@v4
         with:
@@ -265,15 +279,29 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Create OpenClaw read token
+      - name: Read sweeper config
+        id: sweeper-config
+        run: |
+          node -e "
+          const fs = require('node:fs');
+          const cfg = JSON.parse(fs.readFileSync('clawsweeper/sweeper.config.json', 'utf8'));
+          const [owner, name] = cfg.targetRepo.split('/');
+          const localDir = cfg.targetRepoLocalDir || name;
+          process.stdout.write('target_owner=' + owner + '\n');
+          process.stdout.write('target_name=' + name + '\n');
+          process.stdout.write('target_local_dir=' + localDir + '\n');
+          process.stdout.write('target_repo=' + cfg.targetRepo + '\n');
+          " >> "$GITHUB_OUTPUT"
+
+      - name: Create target repo read token
         id: openclaw-read-token
         if: ${{ env.CLAWSWEEPER_APP_ID != '' && env.CLAWSWEEPER_APP_PRIVATE_KEY != '' }}
         uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ env.CLAWSWEEPER_APP_ID }}
           private-key: ${{ env.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: openclaw
-          repositories: openclaw
+          owner: ${{ steps.sweeper-config.outputs.target_owner }}
+          repositories: ${{ steps.sweeper-config.outputs.target_name }}
 
       - uses: actions/setup-node@v4
         with:
@@ -304,23 +332,27 @@ jobs:
 
       - uses: actions/cache@v4
         with:
-          path: openclaw-cache.git
-          key: openclaw-git-${{ runner.os }}-${{ github.run_id }}
+          path: target-repo-cache.git
+          key: target-repo-git-${{ runner.os }}-${{ github.run_id }}
           restore-keys: |
-            openclaw-git-${{ runner.os }}-
+            target-repo-git-${{ runner.os }}-
 
-      - name: Check out OpenClaw
+      - name: Check out target repo
+        env:
+          TARGET_OWNER: ${{ steps.sweeper-config.outputs.target_owner }}
+          TARGET_NAME: ${{ steps.sweeper-config.outputs.target_name }}
+          TARGET_LOCAL_DIR: ${{ steps.sweeper-config.outputs.target_local_dir }}
         run: |
           set -euo pipefail
-          url="https://github.com/openclaw/openclaw.git"
-          if [ -d openclaw-cache.git ]; then
-            git -C openclaw-cache.git remote set-url origin "$url"
-            git -C openclaw-cache.git fetch --prune --depth=1 origin main
+          url="https://github.com/${TARGET_OWNER}/${TARGET_NAME}.git"
+          if [ -d target-repo-cache.git ]; then
+            git -C target-repo-cache.git remote set-url origin "$url"
+            git -C target-repo-cache.git fetch --prune --depth=1 origin main
           else
-            git clone --bare --depth=1 "$url" openclaw-cache.git
+            git clone --bare --depth=1 "$url" target-repo-cache.git
           fi
-          git clone --reference-if-able openclaw-cache.git --dissociate --depth=1 --branch main --single-branch "$url" openclaw
-          git -C openclaw rev-parse --short HEAD
+          git clone --reference-if-able target-repo-cache.git --dissociate --depth=1 --branch main --single-branch "$url" "$TARGET_LOCAL_DIR"
+          git -C "$TARGET_LOCAL_DIR" rev-parse --short HEAD
 
       - name: Review shard
         working-directory: clawsweeper
@@ -333,7 +365,7 @@ jobs:
             hot_intake_arg=(--hot-intake)
           fi
           npm run review -- \
-            --openclaw-dir ../openclaw \
+            --target-dir "../${{ steps.sweeper-config.outputs.target_local_dir }}" \
             --artifact-dir ../review-artifacts/shard-${{ matrix.shard }} \
             --batch-size ${{ needs.plan.outputs.batch_size }} \
             --max-pages ${{ needs.plan.outputs.max_pages }} \
@@ -344,7 +376,7 @@ jobs:
             --codex-timeout-ms ${{ needs.plan.outputs.codex_timeout_ms }} \
             --item-numbers "${{ matrix.item_numbers }}" \
             "${hot_intake_arg[@]}" \
-            --readonly-openclaw \
+            --readonly-target \
             --shard-index ${{ matrix.shard }} \
             --shard-count ${{ needs.plan.outputs.planned_shards }}
 
@@ -368,15 +400,26 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Create OpenClaw write token
+      - name: Read sweeper config
+        id: sweeper-config
+        run: |
+          node -e "
+          const fs = require('node:fs');
+          const cfg = JSON.parse(fs.readFileSync('sweeper.config.json', 'utf8'));
+          const [owner, name] = cfg.targetRepo.split('/');
+          process.stdout.write('target_owner=' + owner + '\n');
+          process.stdout.write('target_name=' + name + '\n');
+          " >> "$GITHUB_OUTPUT"
+
+      - name: Create target repo write token
         id: openclaw-write-token
         if: ${{ env.CLAWSWEEPER_APP_ID != '' && env.CLAWSWEEPER_APP_PRIVATE_KEY != '' }}
         uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ env.CLAWSWEEPER_APP_ID }}
           private-key: ${{ env.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: openclaw
-          repositories: openclaw
+          owner: ${{ steps.sweeper-config.outputs.target_owner }}
+          repositories: ${{ steps.sweeper-config.outputs.target_name }}
           permission-issues: write
           permission-pull-requests: write
 
@@ -474,7 +517,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh workflow run "Sweep OpenClaw Items" \
+          gh workflow run "${{ github.workflow }}" \
             --ref main \
             -f apply_closures=false \
             -f apply_existing=false \
@@ -494,15 +537,26 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Create OpenClaw write token
+      - name: Read sweeper config
+        id: sweeper-config
+        run: |
+          node -e "
+          const fs = require('node:fs');
+          const cfg = JSON.parse(fs.readFileSync('sweeper.config.json', 'utf8'));
+          const [owner, name] = cfg.targetRepo.split('/');
+          process.stdout.write('target_owner=' + owner + '\n');
+          process.stdout.write('target_name=' + name + '\n');
+          " >> "$GITHUB_OUTPUT"
+
+      - name: Create target repo write token
         id: openclaw-write-token
         if: ${{ env.CLAWSWEEPER_APP_ID != '' && env.CLAWSWEEPER_APP_PRIVATE_KEY != '' }}
         uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ env.CLAWSWEEPER_APP_ID }}
           private-key: ${{ env.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: openclaw
-          repositories: openclaw
+          owner: ${{ steps.sweeper-config.outputs.target_owner }}
+          repositories: ${{ steps.sweeper-config.outputs.target_name }}
           permission-issues: write
           permission-pull-requests: write
 
@@ -730,7 +784,7 @@ jobs:
           fi
 
           echo "Apply reached requested limit; queueing another apply run."
-          gh workflow run "Sweep OpenClaw Items" \
+          gh workflow run "${{ github.workflow }}" \
             --ref main \
             -f apply_existing=true \
             -f apply_limit="$APPLY_LIMIT" \

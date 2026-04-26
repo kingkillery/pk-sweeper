@@ -1,19 +1,44 @@
-# ClawSweeper
+# pk-sweeper
 
-ClawSweeper is the conservative OpenClaw maintenance bot for
-`openclaw/openclaw`.
+pk-sweeper is a conservative automated maintenance bot that can run against any
+GitHub repository after a short configuration.
 
 It keeps one markdown report per open issue or PR, publishes one durable Codex
 automated review comment when useful, and only closes items when the evidence is
 strong.
 
+## Configuration
+
+Edit **`sweeper.config.json`** in the repository root before the first run:
+
+```json
+{
+  "targetRepo": "owner/repo",
+  "docsUrl": null,
+  "pluginEcosystem": null,
+  "extraStopWords": [],
+  "protectedLabels": ["security", "beta-blocker", "release-blocker", "maintainer"]
+}
+```
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `targetRepo` | **yes** | The GitHub repository to sweep, e.g. `"myorg/myrepo"` |
+| `docsUrl` | no | Base URL for the target repo's public docs site (enables pretty doc links in comments). Set `null` to disable. |
+| `pluginEcosystem` | no | `{ "name": "...", "url": "..." }` — if your project has a plugin/extension ecosystem, Codex may propose closing plugin-fit issues here rather than in the core repo. Set `null` to disable the `clawhub` close reason. |
+| `extraStopWords` | no | Additional words to skip when searching for related items by title (e.g. the repo name or common project terms). |
+| `protectedLabels` | no | Labels that block automated close proposals. Defaults to `["security", "beta-blocker", "release-blocker", "maintainer"]`. |
+
+That's the full configuration. After filling in `targetRepo`, the workflow and
+all CLI commands work without further changes.
+
 ## Guardrails
 
-ClawSweeper may propose a close only when the item is clearly one of these:
+The sweeper may propose a close only when the item is clearly one of these:
 
 - implemented on current `main`
 - not reproducible on current `main`
-- better suited for ClawHub skill/plugin work than core
+- better suited for the configured plugin ecosystem than core (when `pluginEcosystem` is set)
 - duplicate or superseded by a canonical issue/PR
 - concrete but not actionable in this source repo
 - incoherent enough that no action can be taken
@@ -106,14 +131,14 @@ Latest review: Apr 26, 2026, 03:22 UTC. Latest close: Apr 26, 2026, 03:20 UTC. L
 
 ## How It Works
 
-ClawSweeper has two independent lanes.
+The sweeper has two independent lanes.
 
 ### Review Lane
 
 Review is proposal-only. It never closes items.
 
 - A planner scans open issues and PRs, then assigns exact item numbers to shards.
-- Each shard checks out `openclaw/openclaw` at `main`.
+- Each shard checks out the configured `targetRepo` at `main`.
 - Codex reviews with `gpt-5.5`, high reasoning, fast service tier, and a
   10-minute per-item timeout.
 - Each item becomes `items/<number>.md` with the decision, evidence, suggested
@@ -149,7 +174,7 @@ another apply run with the same settings.
 - Maintainer-authored items are excluded from automated closes.
 - Protected labels block close proposals.
 - Codex runs without GitHub write tokens.
-- CI makes the OpenClaw checkout read-only for reviews.
+- CI makes the target repo checkout read-only for reviews.
 - Reviews fail if Codex leaves tracked or untracked changes behind.
 - Snapshot changes block apply unless the only change is the bot’s own review
   comment.
@@ -162,14 +187,14 @@ duplicates, protected-label proposed closes, and stale review-status records.
 
 ## Local Run
 
-Requires Node 24.
+Requires Node 24. Set `targetRepo` in `sweeper.config.json` first.
 
 ```bash
 source ~/.profile
 npm install
 npm run build
 npm run plan -- --batch-size 5 --shard-count 50 --max-pages 250 --codex-model gpt-5.5 --codex-reasoning-effort high --codex-service-tier fast
-npm run review -- --openclaw-dir ../openclaw --batch-size 5 --max-pages 250 --artifact-dir artifacts/reviews --codex-model gpt-5.5 --codex-reasoning-effort high --codex-service-tier fast --codex-timeout-ms 600000
+npm run review -- --target-dir ../my-repo --batch-size 5 --max-pages 250 --artifact-dir artifacts/reviews --codex-model gpt-5.5 --codex-reasoning-effort high --codex-service-tier fast --codex-timeout-ms 600000
 npm run apply-artifacts -- --artifact-dir artifacts/reviews
 npm run audit -- --max-pages 250 --sample-limit 25
 npm run reconcile -- --dry-run
@@ -199,23 +224,23 @@ Required secrets:
 
 - `OPENAI_API_KEY`: OpenAI API key used to log Codex in before review shards run.
 - `CODEX_API_KEY`: optional compatibility alias for the same key during the login check.
-- `OPENCLAW_GH_TOKEN`: optional fallback GitHub token for read-heavy `openclaw/openclaw` scans and artifact publish reconciliation when the GitHub App token is unavailable.
-- `CLAWSWEEPER_APP_ID`: GitHub App ID for `openclaw-ci`. Currently `3306130`.
-- `CLAWSWEEPER_APP_PRIVATE_KEY`: private key for `openclaw-ci`; plan/review jobs use a short-lived GitHub App installation token for read-heavy `openclaw/openclaw` API calls, and apply/comment-sync jobs use the app token for comments and closes.
+- `OPENCLAW_GH_TOKEN`: optional fallback GitHub token for read-heavy target repo scans and artifact publish reconciliation when the GitHub App token is unavailable.
+- `CLAWSWEEPER_APP_ID`: GitHub App ID for the bot app (optional; used for attributing comments/closes to the bot).
+- `CLAWSWEEPER_APP_PRIVATE_KEY`: private key for the bot app; plan/review jobs use a short-lived GitHub App installation token for read-heavy target API calls, and apply/comment-sync jobs use the app token for comments and closes.
 
 Token flow:
 
 - Review shards log Codex in with `OPENAI_API_KEY`, then run without OpenAI or
   Codex token environment variables.
-- ClawSweeper uses the `openclaw-ci` GitHub App token for read-heavy target
-  context, falling back to `OPENCLAW_GH_TOKEN` only if app secrets are absent.
+- The sweeper uses the GitHub App token for read-heavy target context,
+  falling back to `OPENCLAW_GH_TOKEN` only if app secrets are absent.
 - Apply mode uses the app token for review comments and closes, so GitHub
-  attributes mutations to `clawsweeper[bot]`.
+  attributes mutations to the bot.
 - The built-in `GITHUB_TOKEN` commits generated reports back to this repo.
 
 Required app permissions:
 
 - read access for target scan context
-- write access to `openclaw/openclaw` issues and pull requests
-- optional Actions write on `openclaw/clawsweeper` for app-token-based run
+- write access to target repo issues and pull requests
+- optional Actions write on this sweeper repo for app-token-based run
   cancellation or dispatch

@@ -1,0 +1,7 @@
+{
+  "targetRepo": "owner/repo",
+  "docsUrl": null,
+  "pluginEcosystem": null,
+  "extraStopWords": [],
+  "protectedLabels": ["security", "beta-blocker", "release-blocker", "maintainer"]
+}

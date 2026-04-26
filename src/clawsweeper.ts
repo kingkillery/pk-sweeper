@@ -321,10 +321,42 @@ interface AuditResult {
 }
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const TARGET_REPO = "openclaw/openclaw";
-const REPORT_REPO = "openclaw/clawsweeper";
-const CLAWHUB_URL = "https://clawhub.ai/";
-const DOCS_URL = "https://docs.openclaw.ai";
+
+interface SweeperConfig {
+  targetRepo: string;
+  reportRepo?: string;
+  docsUrl?: string | null;
+  pluginEcosystem?: { name: string; url: string } | null;
+  extraStopWords?: string[];
+  protectedLabels?: string[];
+}
+
+function loadConfig(): SweeperConfig {
+  const configPath = join(ROOT, "sweeper.config.json");
+  if (!existsSync(configPath)) {
+    throw new Error(
+      `sweeper.config.json not found in ${ROOT}. ` +
+        `Create it with at least: { "targetRepo": "owner/repo" }`,
+    );
+  }
+  const raw: unknown = JSON.parse(readFileSync(configPath, "utf8"));
+  if (typeof raw !== "object" || raw === null) {
+    throw new Error("sweeper.config.json must be a JSON object");
+  }
+  const config = raw as SweeperConfig;
+  if (typeof config.targetRepo !== "string" || !config.targetRepo.includes("/")) {
+    throw new Error('sweeper.config.json must have a valid "targetRepo" field, e.g. "owner/repo"');
+  }
+  return config;
+}
+
+const CONFIG = loadConfig();
+const TARGET_REPO = CONFIG.targetRepo;
+const REPORT_REPO = process.env.GITHUB_REPOSITORY ?? CONFIG.reportRepo ?? TARGET_REPO;
+const PLUGIN_ECOSYSTEM: { name: string; url: string } | null = CONFIG.pluginEcosystem ?? null;
+const PLUGIN_ECOSYSTEM_NAME: string = PLUGIN_ECOSYSTEM?.name ?? "plugin ecosystem";
+const CLAWHUB_URL: string | null = PLUGIN_ECOSYSTEM?.url ?? null;
+const DOCS_URL: string | null = CONFIG.docsUrl ?? null;
 const FRESH_DAYS = 7;
 const HOT_REVIEW_DAYS = 7;
 const RECENT_ISSUE_DAYS = 30;
@@ -339,7 +371,9 @@ const DEFAULT_REASONING_EFFORT = "high";
 const DEFAULT_SERVICE_TIER = "fast";
 const REVIEW_POLICY_VERSION = "2026-04-26-policy-v5";
 const REVIEW_COMMENT_MARKER_PREFIX = "<!-- clawsweeper-review";
-const PROTECTED_LABELS = new Set(["security", "beta-blocker", "release-blocker", "maintainer"]);
+const PROTECTED_LABELS = new Set(
+  CONFIG.protectedLabels ?? ["security", "beta-blocker", "release-blocker", "maintainer"],
+);
 const ALLOWED_REASONS = new Set<CloseReason>([
   "implemented_on_main",
   "cannot_reproduce",
@@ -946,7 +980,10 @@ function collectRelatedMentions(options: {
   const scanText = (value: unknown, source: string): void => {
     if (typeof value !== "string" || !value.trim()) return;
     const linked = value.matchAll(
-      /github\.com\/openclaw\/openclaw\/(?:issues|pull)\/(\d+)|(?<![\w/])#(\d+)\b/g,
+      new RegExp(
+        String.raw`github\.com/${TARGET_REPO.replaceAll("/", String.raw`\/`)}/(?:issues|pull)/(\d+)|(?<![\w/])#(\d+)\b`,
+        "g",
+      ),
     );
     for (const match of linked) add(Number(match[1] ?? match[2]), source);
   };
@@ -1020,7 +1057,6 @@ const RELATED_TITLE_STOP_WORDS = new Set([
   "bug",
   "cannot",
   "claw",
-  "clawhub",
   "claws",
   "codex",
   "does",
@@ -1039,7 +1075,6 @@ const RELATED_TITLE_STOP_WORDS = new Set([
   "issue",
   "main",
   "not",
-  "openclaw",
   "pr",
   "request",
   "should",
@@ -1051,6 +1086,7 @@ const RELATED_TITLE_STOP_WORDS = new Set([
   "when",
   "with",
   "without",
+  ...(CONFIG.extraStopWords ?? []).map((w) => w.toLowerCase()),
 ]);
 
 let localRelatedTitleIndexCache: LocalRelatedTitleEntry[] | null = null;
@@ -1823,9 +1859,9 @@ function collectItemContext(item: Item): ItemContext {
   return context;
 }
 
-function gitInfo(openclawDir: string): GitInfo {
-  run("git", ["fetch", "origin", "main", "--depth=50"], { cwd: openclawDir });
-  const mainSha = run("git", ["rev-parse", "origin/main"], { cwd: openclawDir });
+function gitInfo(targetDir: string): GitInfo {
+  run("git", ["fetch", "origin", "main", "--depth=50"], { cwd: targetDir });
+  const mainSha = run("git", ["rev-parse", "origin/main"], { cwd: targetDir });
   let latestRelease: LatestRelease | null = null;
   try {
     latestRelease = ghJson<LatestRelease>([
@@ -1840,10 +1876,10 @@ function gitInfo(openclawDir: string): GitInfo {
   if (latestRelease?.tagName) {
     try {
       run("git", ["fetch", "--force", "origin", "tag", latestRelease.tagName, "--depth=1"], {
-        cwd: openclawDir,
+        cwd: targetDir,
       });
       latestRelease.sha = run("git", ["rev-list", "-n", "1", latestRelease.tagName], {
-        cwd: openclawDir,
+        cwd: targetDir,
       });
     } catch {
       latestRelease.sha = null;
@@ -1852,8 +1888,24 @@ function gitInfo(openclawDir: string): GitInfo {
   return { mainSha, latestRelease };
 }
 
+function pluginEcosystemSection(): string {
+  if (!PLUGIN_ECOSYSTEM) return "";
+  const url = PLUGIN_ECOSYSTEM.url;
+  const name = PLUGIN_ECOSYSTEM.name;
+  return `- \`plugin_ecosystem\` (rendered as \`${name}\`): useful idea, but it belongs as a plugin or extension in the ${name} ecosystem rather than core. Use this when the requested capability is optional integration/provider/channel/skill/bundle work and can be built with current extension surfaces. If there is no plugin ecosystem configured, do not use this close reason. Plugin ecosystem URL: ${url}`;
+}
+
 function promptFor(item: Item, context: ItemContext, git: GitInfo): string {
-  const prompt = readFileSync(join(ROOT, "prompts", "review-item.md"), "utf8");
+  const repoName = TARGET_REPO.split("/")[1] ?? TARGET_REPO;
+  const docsUrlLine = DOCS_URL
+    ? `When citing docs in the close comment, link the public ${DOCS_URL} page rather than the internal docs GitHub file whenever a public page exists.`
+    : "When citing docs in the close comment, link GitHub blob URLs to the relevant docs file.";
+  const rawPrompt = readFileSync(join(ROOT, "prompts", "review-item.md"), "utf8");
+  const prompt = rawPrompt
+    .replaceAll("{{TARGET_REPO}}", TARGET_REPO)
+    .replaceAll("{{REPO_NAME}}", repoName)
+    .replaceAll("{{PLUGIN_ECOSYSTEM_SECTION}}", pluginEcosystemSection())
+    .replaceAll("{{DOCS_URL_INSTRUCTION}}", docsUrlLine);
   return `${prompt}
 
 ## Repository State
@@ -1894,7 +1946,7 @@ export function safeOutputTail(
 }
 
 function codexFailureReason(detail: string): string {
-  if (detail.includes("Codex dirtied the OpenClaw checkout")) return "dirty checkout";
+  if (detail.includes("Codex dirtied the target checkout")) return "dirty checkout";
   if (detail.includes("did not produce output")) return "missing structured output";
   if (detail.includes("invalid JSON")) return "invalid structured output";
   if (detail.includes("ENOBUFS") || detail.includes("maxBuffer")) return "output buffer overflow";
@@ -1934,9 +1986,9 @@ function codexEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-function openclawDirtyStatus(openclawDir: string): string {
+function targetDirtyStatus(targetDir: string): string {
   return run("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
-    cwd: openclawDir,
+    cwd: targetDir,
     env: { GIT_OPTIONAL_LOCKS: "0" },
   });
 }
@@ -1956,7 +2008,7 @@ function runCodex(options: {
   context: ItemContext;
   git: GitInfo;
   model: string;
-  openclawDir: string;
+  targetDir: string;
   reasoningEffort: string;
   sandboxMode: string;
   serviceTier: string;
@@ -1967,10 +2019,10 @@ function runCodex(options: {
   const promptPath = join(options.workDir, `${options.item.number}.prompt.md`);
   const outputPath = join(options.workDir, `${options.item.number}.json`);
   writeFileSync(promptPath, promptFor(options.item, options.context, options.git), "utf8");
-  const dirtyBefore = openclawDirtyStatus(options.openclawDir);
+  const dirtyBefore = targetDirtyStatus(options.targetDir);
   if (dirtyBefore) {
     throw new Error(
-      `OpenClaw checkout is dirty before reviewing #${options.item.number}:\n${dirtyBefore}`,
+      `Target checkout is dirty before reviewing #${options.item.number}:\n${dirtyBefore}`,
     );
   }
   const result = spawnSync(
@@ -1988,7 +2040,7 @@ function runCodex(options: {
       "-c",
       'approval_policy="never"',
       "-C",
-      options.openclawDir,
+      options.targetDir,
       "--output-schema",
       join(ROOT, "schema", "clawsweeper-decision.schema.json"),
       "--output-last-message",
@@ -1998,7 +2050,7 @@ function runCodex(options: {
       "-",
     ],
     {
-      cwd: options.openclawDir,
+      cwd: options.targetDir,
       encoding: "utf8",
       env: codexEnv(),
       input: readFileSync(promptPath, "utf8"),
@@ -2006,10 +2058,10 @@ function runCodex(options: {
       timeout: options.timeoutMs,
     },
   );
-  const dirtyAfter = openclawDirtyStatus(options.openclawDir);
+  const dirtyAfter = targetDirtyStatus(options.targetDir);
   if (dirtyAfter) {
     throw new Error(
-      `Codex dirtied the OpenClaw checkout while reviewing #${options.item.number}:\n${dirtyAfter}`,
+      `Codex dirtied the target checkout while reviewing #${options.item.number}:\n${dirtyAfter}`,
     );
   }
   if (result.error) {
@@ -2063,7 +2115,7 @@ function closeReasonText(reason: CloseReason): string {
     case "cannot_reproduce":
       return "cannot reproduce on current main";
     case "clawhub":
-      return "belongs on ClawHub";
+      return `belongs on ${PLUGIN_ECOSYSTEM_NAME}`;
     case "duplicate_or_superseded":
       return "duplicate or superseded";
     case "not_actionable_in_repo":
@@ -2131,6 +2183,7 @@ function latestFileUrl(file: string): string {
 }
 
 function docsPageUrl(file: string): string | null {
+  if (!DOCS_URL) return null;
   if (!file.startsWith("docs/")) return null;
   const page = file
     .replace(/^docs\//, "")
@@ -2293,7 +2346,9 @@ function closeIntro(reason: CloseReason): string {
     case "cannot_reproduce":
       return "Closing this as not reproducible on current `main` after Codex automated review.";
     case "clawhub":
-      return `Closing this as better suited for ${markdownLink("ClawHub", CLAWHUB_URL)}/community plugin work after Codex automated review.`;
+      return CLAWHUB_URL
+        ? `Closing this as better suited for ${markdownLink(PLUGIN_ECOSYSTEM_NAME, CLAWHUB_URL)}/community plugin work after Codex automated review.`
+        : `Closing this as better suited for the ${PLUGIN_ECOSYSTEM_NAME} rather than this repository after Codex automated review.`;
     case "duplicate_or_superseded":
       return "Closing this as duplicate or superseded after Codex automated review.";
     case "not_actionable_in_repo":
@@ -2312,11 +2367,11 @@ function closeOutro(reason: CloseReason): string {
     case "implemented_on_main":
       return "So I’m closing this as already implemented rather than keeping a duplicate issue open.";
     case "clawhub":
-      return "So I’m closing this as a scope-fit item for the plugin/community path rather than keeping it open as an OpenClaw core request.";
+      return `So I’m closing this as a scope-fit item for the plugin/community path rather than keeping it open as a ${TARGET_REPO.split("/")[1] ?? TARGET_REPO} core request.`;
     case "duplicate_or_superseded":
       return "So I’m closing this here and keeping the remaining discussion on the canonical linked item.";
     case "not_actionable_in_repo":
-      return "So I’m closing this as outside the OpenClaw source repository rather than keeping it open as core work.";
+      return `So I’m closing this as outside the ${TARGET_REPO} source repository rather than keeping it open as core work.`;
     default:
       return "";
   }
@@ -2887,7 +2942,9 @@ function planCommand(args: Args): void {
 }
 
 function reviewCommand(args: Args): void {
-  const openclawDir = resolve(stringArg(args.openclaw_dir, "../openclaw"));
+  const targetDir = resolve(
+    stringArg(args.target_dir ?? args.openclaw_dir, `../${CONFIG.targetRepo.split("/")[1]}`),
+  );
   const artifactDir = resolve(stringArg(args.artifact_dir, "artifacts/reviews"));
   const itemsDir = resolve(stringArg(args.items_dir, join(ROOT, "items")));
   const batchSize = numberArg(args.batch_size, 5);
@@ -2908,16 +2965,16 @@ function reviewCommand(args: Args): void {
           .map((value) => Number(value.trim()))
           .filter((value) => Number.isInteger(value) && value > 0)
       : undefined;
-  const readonlyOpenclaw = boolArg(args.readonly_openclaw);
+  const readonlyOpenclaw = boolArg(args.readonly_target ?? args.readonly_openclaw);
   const requestedApplyClosures =
     boolArg(args.apply_closures) || process.env.CLAWSWEEPER_APPLY_CLOSURES === "true";
   if (requestedApplyClosures) {
     console.error("[review] apply_closures is disabled; review shards are proposal-only");
   }
   ensureDir(artifactDir);
-  const git = gitInfo(openclawDir);
+  const git = gitInfo(targetDir);
   const reviewPolicy = reviewPolicyHash({ model, reasoningEffort, sandboxMode, serviceTier });
-  if (readonlyOpenclaw) makeTreeReadOnly(openclawDir);
+  if (readonlyOpenclaw) makeTreeReadOnly(targetDir);
   const selectionOptions: Parameters<typeof selectCandidates>[0] = {
     batchSize,
     maxPages,
@@ -2951,7 +3008,7 @@ function reviewCommand(args: Args): void {
         context,
         git,
         model,
-        openclawDir,
+        targetDir,
         reasoningEffort,
         sandboxMode,
         serviceTier,
