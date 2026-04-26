@@ -1831,6 +1831,7 @@ function planCandidates(options: {
   reviewPolicy: string;
   hotIntake?: boolean;
   force?: boolean;
+  includeExcluded?: boolean;
 }): { shards: PlanShard[]; scannedPages: number; candidates: Item[] } {
   if (options.itemNumber) {
     const { item, state } = fetchItem(options.itemNumber);
@@ -1848,7 +1849,7 @@ function planCandidates(options: {
   if (options.hotIntake) {
     const { items, pagesScanned } = fetchHotIntakeItems(options.maxPages);
     for (const item of items) {
-      if (!shouldPlanItem(item)) continue;
+      if (!options.includeExcluded && !shouldPlanItem(item)) continue;
       const candidate = dueCandidate(
         item,
         options.itemsDir,
@@ -1877,7 +1878,7 @@ function planCandidates(options: {
     scannedPages = page;
     if (items.length === 0) break;
     for (const item of items) {
-      if (!shouldPlanItem(item)) continue;
+      if (!options.includeExcluded && !shouldPlanItem(item)) continue;
       const candidate = dueCandidate(
         item,
         options.itemsDir,
@@ -3448,6 +3449,7 @@ async function quickCommand(args: Args): Promise<void> {
   if (itemNumber) planOptions.itemNumber = itemNumber;
   if (hotIntake) planOptions.hotIntake = true;
   if (!boolArg(args.respect_cadence)) planOptions.force = true;
+  if (!boolArg(args.respect_exclusions)) planOptions.includeExcluded = true;
   const plan = planCandidates(planOptions);
   const activeShards = plan.shards.filter((shard) => shard.itemNumbers.length > 0);
   writeFileSync(
@@ -4454,6 +4456,7 @@ Useful quick options:
   --codex-model MODEL           Codex model. Default: gpt-5.4-mini.
   --workspace PATH              Output workspace. Default: sibling <repo>.pksweeper.
   --respect-cadence             Skip items that were recently reviewed.
+  --respect-exclusions          Skip maintainer-authored and protected-label items.
   --help, -h                    Show this help without scanning GitHub.
 `);
 }

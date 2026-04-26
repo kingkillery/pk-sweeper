@@ -253,6 +253,12 @@ By default quick mode ignores prior-review cadence so repeated manual runs still
 review open items. Use `--respect-cadence` when you want long-running sweeper
 cadence behavior.
 
+Quick mode also includes maintainer-authored and protected-label items in the
+review plan by default. Close safety still applies during review, so protected or
+maintainer-authored items are not converted into automated close actions. Use
+`--respect-exclusions` when you want the scheduled sweeper's stricter selection
+behavior.
+
 Example with more sub-agents:
 
 ```bash
