@@ -1,0 +1,7 @@
+{
+  "targetRepo": "myorg/myrepo",
+  "docsUrl": null,
+  "pluginEcosystem": null,
+  "extraStopWords": [],
+  "protectedLabels": ["security", "beta-blocker", "release-blocker", "maintainer"]
+}
