@@ -1,6 +1,6 @@
 {
   "name": "pk-sweeper",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "private": false,
   "license": "MIT",
   "bin": {

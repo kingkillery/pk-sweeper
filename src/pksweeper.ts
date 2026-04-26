@@ -28,16 +28,26 @@ type CloseReason =
   | "stale_insufficient_info"
   | "none";
 type Confidence = "high" | "medium" | "low";
+type PrAction = "merge" | "close" | "request_changes" | "fix" | "none";
+type ReviewStatus =
+  | "complete"
+  | "partial_unstructured"
+  | "invalid_structured_output"
+  | "missing_structured_output"
+  | "codex_execution_failed";
 type ActionTaken =
   | "closed"
+  | "merged"
   | "kept_open"
   | "proposed_close"
+  | "proposed_merge"
   | "review_comment_synced"
   | "skipped_changed_since_review"
   | "skipped_already_closed"
   | "skipped_maintainer_authored"
   | "skipped_protected_label"
-  | "skipped_invalid_decision";
+  | "skipped_invalid_decision"
+  | "skipped_pr_merge_not_enabled";
 
 const MAINTAINER_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 
@@ -110,6 +120,7 @@ interface Decision {
   decision: DecisionKind;
   closeReason: CloseReason;
   confidence: Confidence;
+  prAction?: PrAction;
   summary: string;
   evidence: Evidence[];
   risks: string[];
@@ -162,6 +173,11 @@ interface ReviewRuntime {
   reasoningEffort: string;
   sandboxMode?: string;
   serviceTier?: string;
+}
+
+interface ReviewOutcome {
+  decision: Decision;
+  status: ReviewStatus;
 }
 
 interface DashboardItem {
@@ -469,6 +485,7 @@ const DECISION_SCHEMA_KEYS = new Set([
   "decision",
   "closeReason",
   "confidence",
+  "prAction",
   "summary",
   "evidence",
   "risks",
@@ -478,6 +495,7 @@ const DECISION_SCHEMA_KEYS = new Set([
   "closeComment",
 ]);
 const EVIDENCE_SCHEMA_KEYS = new Set(["label", "detail", "file", "line", "command", "sha"]);
+const PR_ACTIONS = new Set<PrAction>(["merge", "close", "request_changes", "fix", "none"]);
 
 function evidenceEntry(options: Partial<Evidence> & Pick<Evidence, "label" | "detail">): Evidence {
   return {
@@ -977,7 +995,7 @@ export function parseDecision(value: unknown): Decision {
     : (() => {
         throw new Error("decision.evidence must be an array");
       })();
-  return {
+  const decision: Decision = {
     decision: requireEnum(record.decision, DECISIONS, "decision.decision"),
     closeReason: requireEnum(record.closeReason, ALL_REASONS, "decision.closeReason"),
     confidence: requireEnum(record.confidence, CONFIDENCES, "decision.confidence"),
@@ -991,6 +1009,10 @@ export function parseDecision(value: unknown): Decision {
     fixedSha: requireNullableString(record.fixedSha, "decision.fixedSha"),
     closeComment: requireString(record.closeComment, "decision.closeComment"),
   };
+  if (record.prAction !== undefined) {
+    decision.prAction = requireEnum(record.prAction, PR_ACTIONS, "decision.prAction");
+  }
+  return decision;
 }
 
 function truncateText(value: unknown, maxLength: number): string {
@@ -1418,12 +1440,17 @@ function frontMatterValue(markdown: string, key: string): string | undefined {
 export function applyDecisionPriority(markdown: string, applyKind: ApplyKind): number {
   const closeReason = frontMatterValue(markdown, "close_reason") as CloseReason | undefined;
   const itemKind = frontMatterValue(markdown, "type");
+  const isMergeProposal =
+    itemKind === "pull_request" &&
+    frontMatterValue(markdown, "confidence") === "high" &&
+    frontMatterValue(markdown, "action_taken") === "proposed_merge" &&
+    frontMatterValue(markdown, "pr_action") === "merge";
   const isCloseProposal =
     frontMatterValue(markdown, "decision") === "close" &&
     frontMatterValue(markdown, "confidence") === "high" &&
     frontMatterValue(markdown, "action_taken") === "proposed_close" &&
     Boolean(closeReason && ALLOWED_REASONS.has(closeReason));
-  if (!isCloseProposal) return 2;
+  if (!isCloseProposal && !isMergeProposal) return 2;
   if (applyKind === "all" || itemKind === applyKind || !itemKind) return 0;
   return 1;
 }
@@ -2168,6 +2195,13 @@ function codexFailureReason(detail: string): string {
   return "codex execution failed";
 }
 
+function reviewStatusFromFailureDetail(detail: string): ReviewStatus {
+  const reason = codexFailureReason(detail);
+  if (reason === "missing structured output") return "missing_structured_output";
+  if (reason === "invalid structured output") return "invalid_structured_output";
+  return "codex_execution_failed";
+}
+
 function codexFailureDecision(status: number | null, stderr: string, stdout = ""): Decision {
   const detail = stderr || "No stderr.";
   const reason = codexFailureReason(detail);
@@ -2231,6 +2265,107 @@ function makeTreeReadOnly(path: string): void {
   chmodSync(path, 0o555);
 }
 
+function jsonCandidateTexts(text: string): string[] {
+  const candidates: string[] = [];
+  const trimmed = text.trim();
+  if (!trimmed) return candidates;
+  candidates.push(trimmed);
+  for (const match of trimmed.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) {
+    if (match[1]?.trim()) candidates.push(match[1].trim());
+  }
+  const first = trimmed.indexOf("{");
+  const last = trimmed.lastIndexOf("}");
+  if (first >= 0 && last > first) candidates.push(trimmed.slice(first, last + 1));
+  return [...new Set(candidates)];
+}
+
+function parseDecisionFromText(text: string): Decision | null {
+  for (const candidate of jsonCandidateTexts(text)) {
+    try {
+      return parseDecision(JSON.parse(candidate));
+    } catch {
+      // Try the next plausible JSON span.
+    }
+  }
+  return null;
+}
+
+function repairDecisionFromUnstructuredOutput(options: {
+  item: Item;
+  codexCommand: CodexCommand;
+  targetDir: string;
+  workDir: string;
+  model: string;
+  reasoningEffort: string;
+  serviceTier: string;
+  sandboxMode: string;
+  timeoutMs: number;
+  raw: string;
+}): Decision | null {
+  const direct = parseDecisionFromText(options.raw);
+  if (direct) return direct;
+  if (!options.raw.trim()) return null;
+  ensureDir(options.workDir);
+  const outputPath = join(options.workDir, `${options.item.number}.repaired.json`);
+  const prompt = `Convert the following failed pk-sweeper Codex review output into valid JSON matching the provided schema.
+
+Rules:
+- Do not inspect or modify the repository.
+- Preserve the actual review conclusion when the text contains one.
+- If the text is only an execution error and contains no usable review conclusion, return a low-confidence keep_open decision with closeReason "none".
+- For pull requests, set prAction to merge, close, request_changes, fix, or none.
+- Return JSON only.
+
+Failed review output:
+
+\`\`\`
+${trimMiddle(options.raw, 40_000)}
+\`\`\`
+`;
+  const result = codexSpawnSync(
+    options.codexCommand,
+    [
+      "exec",
+      "-m",
+      options.model,
+      "-c",
+      `model_reasoning_effort="${options.reasoningEffort}"`,
+      "-c",
+      `service_tier="${options.serviceTier}"`,
+      "-c",
+      'forced_login_method="api"',
+      "-c",
+      'approval_policy="never"',
+      "-C",
+      options.targetDir,
+      "--output-schema",
+      packageAssetPath("schema", "pksweeper-decision.schema.json"),
+      "--output-last-message",
+      outputPath,
+      "--sandbox",
+      options.sandboxMode,
+      "-",
+    ],
+    {
+      cwd: options.targetDir,
+      env: codexEnv(),
+      input: prompt,
+      maxBuffer: 64 * 1024 * 1024,
+      timeout: Math.min(options.timeoutMs, 180_000),
+    },
+  );
+  if (existsSync(outputPath)) {
+    try {
+      return parseDecision(JSON.parse(readFileSync(outputPath, "utf8").trim()));
+    } catch {
+      return parseDecisionFromText(readFileSync(outputPath, "utf8"));
+    }
+  }
+  return parseDecisionFromText(
+    [spawnOutputText(result.stdout), spawnOutputText(result.stderr)].filter(Boolean).join("\n"),
+  );
+}
+
 function runCodex(options: {
   item: Item;
   context: ItemContext;
@@ -2244,7 +2379,7 @@ function runCodex(options: {
   workDir: string;
   codexCommand: CodexCommand;
   dirtyIgnorePaths?: string[];
-}): Decision {
+}): ReviewOutcome {
   ensureDir(options.workDir);
   const promptPath = join(options.workDir, `${options.item.number}.prompt.md`);
   const outputPath = join(options.workDir, `${options.item.number}.json`);
@@ -2294,9 +2429,23 @@ function runCodex(options: {
     );
   }
   if (existsSync(outputPath)) {
+    const outputText = readFileSync(outputPath, "utf8");
     try {
-      return parseDecision(JSON.parse(readFileSync(outputPath, "utf8").trim()));
+      return { decision: parseDecision(JSON.parse(outputText.trim())), status: "complete" };
     } catch (error) {
+      const repaired = repairDecisionFromUnstructuredOutput({
+        ...options,
+        workDir: join(options.workDir, "repair"),
+        raw: [
+          `Invalid structured output file ${outputPath}: ${error instanceof Error ? error.message : String(error)}`,
+          outputText,
+          spawnOutputText(result.stdout),
+          spawnOutputText(result.stderr),
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+      });
+      if (repaired) return { decision: repaired, status: "complete" };
       const decision = codexFailureDecision(
         result.status,
         `Codex wrote invalid JSON or schema-invalid output to ${outputPath}: ${
@@ -2321,6 +2470,14 @@ function runCodex(options: {
     );
   }
   if (result.status !== 0) {
+    const repaired = repairDecisionFromUnstructuredOutput({
+      ...options,
+      workDir: join(options.workDir, "repair"),
+      raw: [spawnOutputText(result.stdout), spawnOutputText(result.stderr)]
+        .filter(Boolean)
+        .join("\n\n"),
+    });
+    if (repaired) return { decision: repaired, status: "partial_unstructured" };
     throw new Error(
       `Codex review failed for #${options.item.number} with exit ${result.status ?? "unknown"}.\n${
         safeOutputTail(spawnOutputText(result.stderr)) ||
@@ -2330,6 +2487,14 @@ function runCodex(options: {
     );
   }
   if (!existsSync(outputPath)) {
+    const repaired = repairDecisionFromUnstructuredOutput({
+      ...options,
+      workDir: join(options.workDir, "repair"),
+      raw: [spawnOutputText(result.stdout), spawnOutputText(result.stderr)]
+        .filter(Boolean)
+        .join("\n\n"),
+    });
+    if (repaired) return { decision: repaired, status: "partial_unstructured" };
     const decision = codexFailureDecision(
       result.status,
       `Codex exited successfully but did not write ${outputPath}.`,
@@ -2988,12 +3153,23 @@ function closeItem(options: { number: number; kind: ItemKind; reason: CloseReaso
   }
 }
 
+function mergePullRequest(number: number): void {
+  ghWithRetry(["pr", "merge", String(number), "--squash", "--delete-branch"]);
+}
+
 export function reviewActionForDecision(options: {
   item: Item;
   decision: Decision;
   git: GitInfo;
   runtime?: Pick<ReviewRuntime, "model" | "reasoningEffort">;
 }): Action {
+  if (
+    options.item.kind === "pull_request" &&
+    options.decision.prAction === "merge" &&
+    options.decision.confidence === "high"
+  ) {
+    return { actionTaken: "proposed_merge", closeComment: "" };
+  }
   if (options.decision.decision !== "close") return { actionTaken: "kept_open", closeComment: "" };
   if (isMaintainerAuthored(options.item)) {
     return { actionTaken: "skipped_maintainer_authored", closeComment: "" };
@@ -3014,6 +3190,7 @@ function markdownFor(options: {
   snapshotHash: string;
   reviewPolicy: string;
   runtime: ReviewRuntime;
+  reviewStatus?: ReviewStatus;
 }): string {
   const labels = options.item.labels.length ? options.item.labels.join(", ") : "none";
   const evidence = options.decision.evidence.length
@@ -3060,7 +3237,7 @@ review_reasoning_effort: ${options.runtime.reasoningEffort}
 review_sandbox: ${options.runtime.sandboxMode ?? "unknown"}
 review_service_tier: ${options.runtime.serviceTier ?? "unknown"}
 review_mode: ${options.reviewMode}
-review_status: ${options.decision.summary.startsWith("Codex review failed") ? "failed" : "complete"}
+review_status: ${options.reviewStatus ?? (options.decision.summary.startsWith("Codex review failed") ? "codex_execution_failed" : "complete")}
 local_checkout_access: verified
 item_snapshot_hash: ${options.snapshotHash}
 close_comment_sha256: ${options.action.closeComment ? sha256(options.action.closeComment) : "none"}
@@ -3069,6 +3246,7 @@ review_comment_id: unknown
 review_comment_url: unknown
 decision: ${options.decision.decision}
 close_reason: ${options.decision.closeReason}
+pr_action: ${options.decision.prAction ?? "none"}
 confidence: ${options.decision.confidence}
 action_taken: ${options.action.actionTaken}
 ---
@@ -3246,8 +3424,9 @@ function reviewCommand(args: Args): void {
     const context = collectItemContext(item);
     const snapshotHash = itemSnapshotHash(item, context);
     let decision: Decision;
+    let reviewStatus: ReviewStatus = "complete";
     try {
-      decision = runCodex({
+      const outcome = runCodex({
         item,
         context,
         git,
@@ -3261,12 +3440,16 @@ function reviewCommand(args: Args): void {
         codexCommand,
         dirtyIgnorePaths,
       });
+      decision = outcome.decision;
+      reviewStatus = outcome.status;
     } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
       decision = codexFailureDecision(
         null,
-        error instanceof Error ? error.message : String(error),
+        detail,
         "Per-item Codex failure; continuing with the rest of the shard.",
       );
+      reviewStatus = reviewStatusFromFailureDetail(detail);
     }
     const runtime = { model, reasoningEffort, sandboxMode, serviceTier };
     const action = reviewActionForDecision({ item, decision, git, runtime });
@@ -3282,11 +3465,11 @@ function reviewCommand(args: Args): void {
         snapshotHash,
         reviewPolicy,
         runtime,
+        reviewStatus,
       }),
       "utf8",
     );
     completed += 1;
-    const reviewStatus = decision.summary.startsWith("Codex review failed") ? "failed" : "complete";
     console.error(
       `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} done #${item.number} (${completed}/${candidates.length}) review_status=${reviewStatus} decision=${decision.decision} confidence=${decision.confidence} action=${action.actionTaken}`,
     );
@@ -3333,12 +3516,139 @@ interface QuickReport {
   url: string;
   decision: string;
   closeReason: string;
+  prAction: string;
   confidence: string;
   action: string;
   reviewStatus: string;
   summary: string;
   bestSolution: string;
   path: string;
+}
+
+interface GapIssueProposal {
+  title: string;
+  body: string;
+  labels: string[];
+  priority: "high" | "medium" | "low";
+}
+
+function parseGapIssueProposals(value: unknown): GapIssueProposal[] {
+  const record = requireRecord(value, "gap_review");
+  if (!Array.isArray(record.issues)) throw new Error("gap_review.issues must be an array");
+  return record.issues.map((entry, index) => {
+    const issue = requireRecord(entry, `gap_review.issues[${index}]`);
+    return {
+      title: requireString(issue.title, `gap_review.issues[${index}].title`),
+      body: requireString(issue.body, `gap_review.issues[${index}].body`),
+      labels: requireStringArray(issue.labels, `gap_review.issues[${index}].labels`),
+      priority: requireEnum(
+        issue.priority,
+        new Set(["high", "medium", "low"]),
+        `gap_review.issues[${index}].priority`,
+      ),
+    };
+  });
+}
+
+function renderPotentialIssues(issues: GapIssueProposal[]): string {
+  const body = issues.length
+    ? issues
+        .map(
+          (issue, index) =>
+            `## ${index + 1}. ${issue.title}\n\nPriority: ${issue.priority}\n\nLabels: ${issue.labels.join(", ") || "none"}\n\n${issue.body.trim()}`,
+        )
+        .join("\n\n")
+    : "_No high-signal codebase gaps found._";
+  return `# Potential Issues\n\n${body}\n`;
+}
+
+function createPotentialIssues(issues: GapIssueProposal[]): void {
+  for (const issue of issues) {
+    const bodyFile = join(
+      ROOT,
+      ".artifacts",
+      `potential-issue-${sha256(issue.title).slice(0, 12)}.md`,
+    );
+    ensureDir(dirname(bodyFile));
+    writeFileSync(bodyFile, issue.body, "utf8");
+    const args = ["issue", "create", "--title", issue.title, "--body-file", bodyFile];
+    for (const label of issue.labels) args.push("--label", label);
+    ghWithRetry(args);
+  }
+}
+
+function runCodebaseGapReview(options: {
+  targetDir: string;
+  workspace: string;
+  codexCommand: CodexCommand;
+  model: string;
+  reasoningEffort: string;
+  serviceTier: string;
+  sandboxMode: string;
+  timeoutMs: number;
+  createIssues: boolean;
+}): void {
+  const outputPath = join(options.workspace, "potential-issues.json");
+  const prompt = `Review this repository for high-signal gaps that should become GitHub issues because there are no open issues or pull requests selected for pk-sweeper quick mode.
+
+Inspect the codebase read-only. Find only concrete, actionable gaps: bugs, missing tests around risky behavior, broken docs/setup paths, reliability problems, or automation failures. Avoid vague wishlist items.
+
+Return JSON with an "issues" array. Each issue needs title, body, labels, and priority. The body must be ready to paste into a GitHub issue and include evidence from files/commands when possible. Return at most 5 issues.
+`;
+  const result = codexSpawnSync(
+    options.codexCommand,
+    [
+      "exec",
+      "-m",
+      options.model,
+      "-c",
+      `model_reasoning_effort="${options.reasoningEffort}"`,
+      "-c",
+      `service_tier="${options.serviceTier}"`,
+      "-c",
+      'forced_login_method="api"',
+      "-c",
+      'approval_policy="never"',
+      "-C",
+      options.targetDir,
+      "--output-schema",
+      packageAssetPath("schema", "pksweeper-gap-review.schema.json"),
+      "--output-last-message",
+      outputPath,
+      "--sandbox",
+      options.sandboxMode,
+      "-",
+    ],
+    {
+      cwd: options.targetDir,
+      env: codexEnv(),
+      input: prompt,
+      maxBuffer: 128 * 1024 * 1024,
+      timeout: options.timeoutMs,
+    },
+  );
+  let issues: GapIssueProposal[] = [];
+  if (existsSync(outputPath)) {
+    issues = parseGapIssueProposals(JSON.parse(readFileSync(outputPath, "utf8").trim()));
+  } else if (result.error || result.status !== 0) {
+    const detail =
+      result.error?.message ||
+      safeOutputTail(spawnOutputText(result.stderr)) ||
+      safeOutputTail(spawnOutputText(result.stdout)) ||
+      `exit ${result.status}`;
+    writeFileSync(
+      join(options.workspace, "potential-issues.md"),
+      `# Potential Issues\n\nCodebase gap review failed: ${detail}\n`,
+      "utf8",
+    );
+    return;
+  }
+  writeFileSync(
+    join(options.workspace, "potential-issues.md"),
+    renderPotentialIssues(issues),
+    "utf8",
+  );
+  if (options.createIssues && issues.length) createPotentialIssues(issues);
 }
 
 function oneLine(text: string, fallback = "No summary provided."): string {
@@ -3358,6 +3668,7 @@ function quickReportFromMarkdown(path: string): QuickReport {
     url: frontMatterValue(markdown, "url") ?? "",
     decision: frontMatterValue(markdown, "decision") ?? "unknown",
     closeReason: frontMatterValue(markdown, "close_reason") ?? "unknown",
+    prAction: frontMatterValue(markdown, "pr_action") ?? "none",
     confidence: frontMatterValue(markdown, "confidence") ?? "unknown",
     action: frontMatterValue(markdown, "action_taken") ?? "unknown",
     reviewStatus: effectiveReviewStatus(markdown),
@@ -3368,14 +3679,20 @@ function quickReportFromMarkdown(path: string): QuickReport {
 }
 
 function quickReportBucket(report: QuickReport): string {
-  if (report.reviewStatus !== "complete") return "Failed reviews";
+  if (report.reviewStatus === "partial_unstructured") return "Recovered partial reviews";
+  if (isFailedQuickReview(report.reviewStatus)) return "Failed reviews";
   if (report.action === "proposed_close" || report.decision === "close") return "Close candidates";
+  if (report.action === "proposed_merge" || report.prAction === "merge") return "PR actions";
   if (report.kind === "pull_request") return "PR actions";
   if (report.confidence === "high" || report.confidence === "medium") return "Fix now";
   if (/repro|reproduce|reproduction/i.test(`${report.summary} ${report.bestSolution}`)) {
     return "Needs reproduction";
   }
   return "Needs maintainer decision";
+}
+
+function isFailedQuickReview(status: string): boolean {
+  return status !== "complete" && status !== "partial_unstructured";
 }
 
 function quickReportLine(report: QuickReport, workspace: string): string {
@@ -3392,6 +3709,7 @@ function quickBucketSections(reports: QuickReport[], workspace: string): string 
     "PR actions",
     "Needs reproduction",
     "Needs maintainer decision",
+    "Recovered partial reviews",
     "Failed reviews",
   ];
   return bucketOrder
@@ -3431,6 +3749,7 @@ function renderQuickSummary(options: {
     "PR actions",
     "Needs reproduction",
     "Needs maintainer decision",
+    "Recovered partial reviews",
     "Failed reviews",
   ]
     .map((bucket) => `- ${bucket}: ${counts.get(bucket) ?? 0}`)
@@ -3492,7 +3811,7 @@ function writeQuickOutputs(options: {
     renderQuickPlan(reports, options.workspace),
     "utf8",
   );
-  const failedReviews = reports.filter((report) => report.reviewStatus !== "complete").length;
+  const failedReviews = reports.filter((report) => isFailedQuickReview(report.reviewStatus)).length;
   return {
     failedReviews,
     completeReviews: reports.length - failedReviews,
@@ -3565,6 +3884,7 @@ async function quickCommand(args: Args): Promise<void> {
   const timeoutMs = numberArg(args.codex_timeout_ms, 600_000);
   const hotIntake = boolArg(args.hot_intake);
   const itemNumber = numberArg(args.item_number, 0) || undefined;
+  const createIssues = boolArg(args.create_issues);
 
   ensureDir(workspace);
   ensureDir(itemsDir);
@@ -3600,10 +3920,25 @@ async function quickCommand(args: Args): Promise<void> {
     "utf8",
   );
   console.error(
-    `[quick] planned ${plan.candidates.length} item(s) across ${activeShards.length} active shard(s); agents=${shardCount} concurrency=${concurrency} model=${model}`,
+    `[quick] planned ${plan.candidates.length} item(s) across ${activeShards.length} active shard(s); agents=${activeShards.length} requested_agents=${shardCount} concurrency=${Math.min(concurrency, Math.max(1, activeShards.length))} model=${model}`,
   );
   if (activeShards.length === 0) {
     console.error("[quick] no due items selected");
+    console.error("[quick] reviewing codebase for potential issue proposals");
+    runCodebaseGapReview({
+      targetDir,
+      workspace,
+      codexCommand,
+      model,
+      reasoningEffort,
+      serviceTier,
+      sandboxMode,
+      timeoutMs,
+      createIssues,
+    });
+    console.error(
+      `[quick] wrote ${join(workspace, "potential-issues.md")}${createIssues ? " and created GitHub issues" : ""}`,
+    );
     return;
   }
 
@@ -3693,6 +4028,7 @@ function applyDecisionsCommand(args: Args): void {
   const progressEvery = Math.max(1, numberArg(args.progress_every, 10));
   const skipDashboard = boolArg(args.skip_dashboard);
   const syncCommentsOnly = boolArg(args.sync_comments_only);
+  const mergePrs = boolArg(args.merge_prs);
   const requestedItemNumbers = itemNumbersArg(args.item_numbers, args.item_number);
   const requestedItemNumberSet = new Set(requestedItemNumbers);
   const results: ApplyResult[] = [];
@@ -3773,9 +4109,17 @@ function applyDecisionsCommand(args: Args): void {
       });
       continue;
     }
-    if (!storedHash || (action !== "proposed_close" && action !== "kept_open")) {
+    if (
+      !storedHash ||
+      (action !== "proposed_close" && action !== "proposed_merge" && action !== "kept_open")
+    ) {
       continue;
     }
+    const isMergeProposal =
+      frontMatterValue(markdown, "type") === "pull_request" &&
+      confidence === "high" &&
+      action === "proposed_merge" &&
+      frontMatterValue(markdown, "pr_action") === "merge";
     const isCloseProposal =
       decision === "close" &&
       confidence === "high" &&
@@ -3920,6 +4264,50 @@ function applyDecisionsCommand(args: Args): void {
       if (processedCount >= processedLimit) break;
     }
     if (syncCommentsOnly) continue;
+    if (isMergeProposal) {
+      if (!mergePrs) {
+        if (
+          markApplySkipped("skipped_pr_merge_not_enabled", "pass --merge-prs to merge proposed PRs")
+        )
+          break;
+        continue;
+      }
+      if (closedCount >= limit) break;
+      if (applyKind !== "all" && applyKind !== "pull_request") {
+        results.push({
+          number,
+          action: "kept_open",
+          reason: `type is pull_request; apply kind is ${applyKind}`,
+        });
+        processedCount += 1;
+        maybeLogProgress(`skipped #${number}: apply kind is ${applyKind}`);
+        if (processedCount >= processedLimit) break;
+        continue;
+      }
+      if (!isOlderThanDays(item.createdAt, minAgeDays)) {
+        results.push({
+          number,
+          action: "kept_open",
+          reason: `created less than or equal to ${minAgeDays} days ago`,
+        });
+        processedCount += 1;
+        maybeLogProgress(`skipped #${number}: too new`);
+        if (processedCount >= processedLimit) break;
+        continue;
+      }
+      logProgress(`merging PR #${number}`);
+      mergePullRequest(number);
+      sleepMs(closeDelayMs);
+      markdown = replaceFrontMatterValue(markdown, "action_taken", "merged");
+      markdown = replaceFrontMatterValue(markdown, "applied_at", new Date().toISOString());
+      archiveClosed(markdown);
+      closedCount += 1;
+      processedCount += 1;
+      results.push({ number, action: "merged", reason: "high-confidence Codex merge proposal" });
+      logProgress(`merged PR #${number}`);
+      if (processedCount >= processedLimit) break;
+      continue;
+    }
     if (!isCloseProposal || !closeReason) {
       continue;
     }
@@ -4585,11 +4973,13 @@ Usage:
   pk-sweeper apply-decisions [--repo owner/repo]
 
 Quick mode:
-  Reviews open GitHub issues and PRs now, using 50 async Codex shards by default.
+  Reviews open GitHub issues and PRs now, starting only shards with selected items.
   Writes reports and maintainer-facing output to a sibling workspace:
     <repo>.pksweeper/quick-summary.md
     <repo>.pksweeper/todo.md
     <repo>.pksweeper/plan.md
+  If no open items are selected, reviews the codebase and writes:
+    <repo>.pksweeper/potential-issues.md
 
 Useful quick options:
   --repo owner/repo              Target GitHub repository.
@@ -4600,8 +4990,10 @@ Useful quick options:
   --codex-model MODEL           Codex model. Default: gpt-5.4-mini.
   --codex-bin PATH              Codex executable. Also supports PKSWEEPER_CODEX_BIN.
   --workspace PATH              Output workspace. Default: sibling <repo>.pksweeper.
+  --create-issues               Create GitHub issues from no-open-item codebase gaps.
   --respect-cadence             Skip items that were recently reviewed.
   --respect-exclusions          Skip maintainer-authored and protected-label items.
+  apply-decisions --merge-prs    Merge high-confidence proposed PR merge reports.
   --help, -h                    Show this help without scanning GitHub.
 `);
 }

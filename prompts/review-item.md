@@ -36,6 +36,16 @@ Close as implemented when current `main` solves the observable user problem well
 
 Keep open for everything else, including real bugs, unclear-but-salvageable reports, stale PRs that might still contain useful work, optional features that require a new core/plugin API first, or anything where the evidence is not high-confidence.
 
+For pull requests, also set `prAction`:
+
+- `merge`: the PR is merge-ready against current `main`, has a coherent purpose, and remaining risk is low.
+- `close`: the PR should be closed/deleted because it is obsolete, superseded, not actionable, or unsafe to merge. Pair this with a `close` decision only when evidence is high-confidence.
+- `request_changes`: the PR has useful direction but needs concrete reviewer changes before merge.
+- `fix`: the PR or repo needs implementation work before this can become mergeable.
+- `none`: use this for issues and for PRs where there is not enough evidence to recommend a specific PR action.
+
+Do not recommend `merge` unless you inspected the PR body, changed files, relevant current `main` behavior, and discussion/comments enough to identify the merge risk. If the PR needs maintainer product judgment, request changes or keep it open rather than recommending merge.
+
 Keep open any item whose GitHub author association is `OWNER`, `MEMBER`, or `COLLABORATOR`. Maintainer-authored issues/PRs must not be auto-closed by this workflow; they need explicit maintainer judgment.
 
 Keep open any item with a protected label. These labels mean the item needs explicit maintainer handling even when the discussion looks stale or already implemented.

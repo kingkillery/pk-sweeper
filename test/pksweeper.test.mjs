@@ -340,11 +340,25 @@ test("apply mode prioritizes matching close proposals before comment sync", () =
 
   assert.equal(applyDecisionPriority(issueClose, "issue"), 0);
   assert.equal(applyDecisionPriority(pullRequestClose, "issue"), 1);
+  assert.equal(
+    applyDecisionPriority(
+      reportFrontMatter({
+        type: "pull_request",
+        confidence: "high",
+        action_taken: "proposed_merge",
+        pr_action: "merge",
+      }),
+      "pull_request",
+    ),
+    0,
+  );
   assert.equal(applyDecisionPriority(reportFrontMatter(), "issue"), 2);
 });
 
 test("decision parser enforces required schema-shaped evidence", () => {
-  assert.equal(parseDecision(closeDecision()).decision, "close");
+  const parsed = parseDecision(closeDecision({ prAction: "merge" }));
+  assert.equal(parsed.decision, "close");
+  assert.equal(parsed.prAction, "merge");
   assert.throws(
     () =>
       parseDecision({

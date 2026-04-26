@@ -36,6 +36,11 @@
       "type": "string",
       "enum": ["high", "medium", "low"]
     },
+    "prAction": {
+      "type": "string",
+      "enum": ["merge", "close", "request_changes", "fix", "none"],
+      "description": "For pull requests only: recommend merge, close/delete, request changes, fix before merge, or none. Use none for issues."
+    },
     "summary": {
       "type": "string"
     },
