@@ -259,6 +259,10 @@ maintainer-authored items are not converted into automated close actions. Use
 `--respect-exclusions` when you want the scheduled sweeper's stricter selection
 behavior.
 
+Terminal output distinguishes shard process failures from failed Codex reviews:
+`failed_shards` means the child process failed, while `failed_reviews` means the
+item report has `review_status: failed`.
+
 Example with more sub-agents:
 
 ```bash

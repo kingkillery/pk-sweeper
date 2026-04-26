@@ -536,6 +536,10 @@ function pathListArg(value: string | boolean | string[] | undefined): string[] {
     .map((path) => resolve(path));
 }
 
+function absoluteArgPath(path: string): string {
+  return resolve(path);
+}
+
 export function itemNumbersArg(
   itemNumbers: string | boolean | string[] | undefined,
   itemNumber: string | boolean | string[] | undefined,
@@ -3061,11 +3065,11 @@ function planCommand(args: Args): void {
 }
 
 function reviewCommand(args: Args): void {
-  const targetDir = resolve(
+  const targetDir = absoluteArgPath(
     stringArg(args.target_dir ?? args.openclaw_dir, `../${TARGET_REPO.split("/")[1]}`),
   );
-  const artifactDir = resolve(stringArg(args.artifact_dir, "artifacts/reviews"));
-  const itemsDir = resolve(stringArg(args.items_dir, join(ROOT, "items")));
+  const artifactDir = absoluteArgPath(stringArg(args.artifact_dir, "artifacts/reviews"));
+  const itemsDir = absoluteArgPath(stringArg(args.items_dir, join(ROOT, "items")));
   const batchSize = numberArg(args.batch_size, 5);
   const maxPages = numberArg(args.max_pages, 250);
   const model = stringArg(args.codex_model, DEFAULT_CODEX_MODEL);
@@ -3165,8 +3169,9 @@ function reviewCommand(args: Args): void {
       "utf8",
     );
     completed += 1;
+    const reviewStatus = decision.summary.startsWith("Codex review failed") ? "failed" : "complete";
     console.error(
-      `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} done #${item.number} (${completed}/${candidates.length}) decision=${decision.decision} confidence=${decision.confidence} action=${action.actionTaken}`,
+      `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} done #${item.number} (${completed}/${candidates.length}) review_status=${reviewStatus} decision=${decision.decision} confidence=${decision.confidence} action=${action.actionTaken}`,
     );
   }
   console.error(
@@ -3335,7 +3340,7 @@ function writeQuickOutputs(options: {
   failedShards: number;
   model: string;
   reasoningEffort: string;
-}): void {
+}): { failedReviews: number; completeReviews: number; reportCount: number } {
   const planned = new Set(options.plannedNumbers);
   const reports = markdownFiles(options.itemsDir)
     .map((file) => join(options.itemsDir, file))
@@ -3366,6 +3371,12 @@ function writeQuickOutputs(options: {
     renderQuickPlan(reports, options.workspace),
     "utf8",
   );
+  const failedReviews = reports.filter((report) => report.reviewStatus !== "complete").length;
+  return {
+    failedReviews,
+    completeReviews: reports.length - failedReviews,
+    reportCount: reports.length,
+  };
 }
 
 function runChild(command: string, args: string[], options: { cwd: string }): Promise<number> {
@@ -3521,7 +3532,7 @@ async function quickCommand(args: Args): Promise<void> {
   });
 
   const failed = statuses.filter((status) => status !== 0).length;
-  writeQuickOutputs({
+  const quickOutput = writeQuickOutputs({
     workspace,
     itemsDir,
     plannedNumbers: plan.candidates.map((item) => item.number),
@@ -3530,7 +3541,7 @@ async function quickCommand(args: Args): Promise<void> {
     reasoningEffort,
   });
   console.error(
-    `[quick] merged artifacts into ${itemsDir}; completed_shards=${statuses.length - failed} failed_shards=${failed}`,
+    `[quick] merged artifacts into ${itemsDir}; completed_shards=${statuses.length - failed} failed_shards=${failed} complete_reviews=${quickOutput.completeReviews} failed_reviews=${quickOutput.failedReviews}`,
   );
   console.error(
     `[quick] wrote ${join(workspace, "quick-summary.md")}, ${join(workspace, "todo.md")}, and ${join(workspace, "plan.md")}`,
