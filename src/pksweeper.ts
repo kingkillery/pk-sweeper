@@ -209,6 +209,12 @@ interface OpenItemCounts {
   total: number;
 }
 
+interface RemoteBranch {
+  remote: string;
+  branch: string;
+  repo: string | undefined;
+}
+
 interface DashboardKindStats {
   total: number;
   fresh: number;
@@ -406,6 +412,47 @@ export function detectTargetRepoFromGit(): string | undefined {
     // ignore errors
   }
   return undefined;
+}
+
+export function parseGitUpstreamBranch(upstream: string, remoteUrl?: string): RemoteBranch | null {
+  const trimmed = upstream.trim();
+  const separator = trimmed.indexOf("/");
+  if (separator <= 0 || separator === trimmed.length - 1) return null;
+  return {
+    remote: trimmed.slice(0, separator),
+    branch: trimmed.slice(separator + 1),
+    repo: remoteUrl ? parseGitRemoteUrl(remoteUrl) : undefined,
+  };
+}
+
+function currentRemoteBranch(cwd = process.cwd()): RemoteBranch | null {
+  const upstream = spawnSync("git", ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  if (upstream.status !== 0) return null;
+  const upstreamName = upstream.stdout.trim();
+  const remoteName = upstreamName.split("/", 1)[0];
+  if (!remoteName) return null;
+  const remoteUrl = spawnSync("git", ["remote", "get-url", remoteName], {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  return parseGitUpstreamBranch(
+    upstreamName,
+    remoteUrl.status === 0 ? remoteUrl.stdout.trim() : undefined,
+  );
+}
+
+export function branchIssueNumbers(branch: string): number[] {
+  const numbers = new Set<number>();
+  for (const match of branch.matchAll(/(?:^|[^\d])#?([1-9]\d{1,})(?=$|[^\d])/g)) {
+    const value = Number(match[1]);
+    if (Number.isSafeInteger(value)) numbers.add(value);
+  }
+  return [...numbers].sort((left, right) => left - right);
 }
 
 function resolveTargetRepo(config: SweeperConfig): string {
@@ -1742,6 +1789,31 @@ function fetchItem(number: number): { item: Item; state: string } {
     },
     state: issue.state ?? "unknown",
   };
+}
+
+function fetchOpenBranchPullRequestNumbers(remoteBranch: RemoteBranch): number[] {
+  const headRepo = remoteBranch.repo ?? TARGET_REPO;
+  const owner = headRepo.split("/")[0];
+  if (!owner) return [];
+  const head = encodeURIComponent(`${owner}:${remoteBranch.branch}`);
+  const pulls = ghJsonLines<{ number: number }>([
+    "api",
+    `repos/${TARGET_REPO}/pulls?state=open&head=${head}&per_page=100`,
+    "--jq",
+    ".[] | {number}",
+  ]);
+  return pulls
+    .map((pull) => pull.number)
+    .filter((number) => Number.isInteger(number) && number > 0);
+}
+
+function fetchOpenBranchItemNumbers(remoteBranch: RemoteBranch): number[] {
+  const numbers = new Set(fetchOpenBranchPullRequestNumbers(remoteBranch));
+  for (const number of branchIssueNumbers(remoteBranch.branch)) {
+    const { state } = fetchItem(number);
+    if (state === "open") numbers.add(number);
+  }
+  return [...numbers].sort((left, right) => left - right);
 }
 
 function fetchOpenItemCounts(): OpenItemCounts {
@@ -4956,6 +5028,95 @@ function statusCommand(args: Args): void {
   writeFileSync(readmePath, updated, "utf8");
 }
 
+function codebaseReviewPrompt(targetDir: string): string {
+  return `Review this codebase for correctness, maintainability, and user-visible risks.
+
+Work in the checked-out repository at ${targetDir}. Inspect source, tests, docs, configuration, and git history as needed. This is a read-only review: do not edit files, create commits, install dependencies, run formatters, or write generated artifacts inside the repository.
+
+Return a concise Markdown review. Lead with concrete findings ordered by severity. Include file paths and line numbers when possible, then summarize any test or verification gaps. If you find no issues, say so clearly and mention the remaining review limits.`;
+}
+
+function codebaseReviewCommand(args: Args): void {
+  const targetDir = resolve(stringArg(args.target_dir ?? args.openclaw_dir, process.cwd()));
+  const artifactDir = resolve(stringArg(args.artifact_dir, "artifacts/codebase-review"));
+  const model = stringArg(args.codex_model, DEFAULT_CODEX_MODEL);
+  const reasoningEffort = stringArg(args.codex_reasoning_effort, DEFAULT_REASONING_EFFORT);
+  const sandboxMode = stringArg(args.codex_sandbox, "read-only");
+  const serviceTier = stringArg(args.codex_service_tier, DEFAULT_SERVICE_TIER);
+  const timeoutMs = numberArg(args.codex_timeout_ms, 600_000);
+  ensureDir(artifactDir);
+  const outputPath = join(artifactDir, "review.md");
+  const result = spawnSync(
+    "codex",
+    [
+      "exec",
+      "-m",
+      model,
+      "-c",
+      `model_reasoning_effort="${reasoningEffort}"`,
+      "-c",
+      `service_tier="${serviceTier}"`,
+      "-c",
+      'forced_login_method="api"',
+      "-c",
+      'approval_policy="never"',
+      "-C",
+      targetDir,
+      "--output-last-message",
+      outputPath,
+      "--sandbox",
+      sandboxMode,
+      "-",
+    ],
+    {
+      cwd: targetDir,
+      encoding: "utf8",
+      env: codexEnv(),
+      input: codebaseReviewPrompt(targetDir),
+      maxBuffer: 128 * 1024 * 1024,
+      timeout: timeoutMs,
+    },
+  );
+  if (result.error || result.status !== 0) {
+    const status = result.status ?? "unknown";
+    const detail =
+      result.error?.message || safeOutputTail(result.stderr) || safeOutputTail(result.stdout);
+    throw new Error(`Codebase review failed with exit ${status}: ${detail || "No output."}`);
+  }
+  if (!existsSync(outputPath)) {
+    throw new Error(`Codebase review finished but did not write ${outputPath}.`);
+  }
+  console.log(readFileSync(outputPath, "utf8"));
+}
+
+function launchCommand(args: Args): void {
+  const launchArgs: Args = { ...args };
+  if (!launchArgs.target_dir && !launchArgs.openclaw_dir) {
+    launchArgs.target_dir = process.cwd();
+  }
+  const remoteBranch = currentRemoteBranch();
+  if (!remoteBranch) {
+    console.error("[launch] no upstream remote branch found; running codebase review");
+    codebaseReviewCommand(launchArgs);
+    return;
+  }
+  const itemNumbers = fetchOpenBranchItemNumbers(remoteBranch);
+  console.error(
+    `[launch] upstream=${remoteBranch.remote}/${remoteBranch.branch} item_numbers=${
+      itemNumbers.join(",") || "none"
+    }`,
+  );
+  if (itemNumbers.length === 0) {
+    console.error("[launch] no open branch PRs/issues found; running codebase review");
+    codebaseReviewCommand(launchArgs);
+    return;
+  }
+  reviewCommand({
+    ...launchArgs,
+    item_numbers: itemNumbers.join(","),
+  });
+}
+
 function checkCommand(): void {
   JSON.parse(readFileSync(packageAssetPath("schema", "pksweeper-decision.schema.json"), "utf8"));
   if (!existsSync(join(ROOT, ".github", "workflows", "sweep.yml")))
@@ -5000,11 +5161,13 @@ Useful quick options:
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const args = parseArgs(argv);
-  const command = args._[0] ?? "review";
+  const command = args._[0] ?? "launch";
   if (command === "help" || command === "-h" || boolArg(args.help) || boolArg(args.h))
     helpCommand();
+  else if (command === "launch") launchCommand(args);
   else if (command === "plan") planCommand(args);
   else if (command === "review") reviewCommand(args);
+  else if (command === "review-codebase") codebaseReviewCommand(args);
   else if (command === "quick" || command === "run") await quickCommand(args);
   else if (command === "apply-artifacts") applyArtifactsCommand(args);
   else if (command === "apply-decisions") applyDecisionsCommand(args);

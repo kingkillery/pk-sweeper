@@ -5,6 +5,7 @@ import {
   applyDecisionPriority,
   auditFromSnapshot,
   auditHasStrictFailures,
+  branchIssueNumbers,
   detectTargetRepoFromGit,
   ghRetryKind,
   isCodexReviewCommentBody,
@@ -12,6 +13,7 @@ import {
   itemNumbersArg,
   parseDecision,
   parseGitRemoteUrl,
+  parseGitUpstreamBranch,
   parseRepoFlag,
   protectedLabels,
   relatedTitleSearchTerms,
@@ -552,6 +554,25 @@ test("parseGitRemoteUrl parses SSH and HTTPS GitHub remote URLs", () => {
   assert.equal(parseGitRemoteUrl("not-a-url"), undefined);
   // Trailing paths are rejected (stricter matching)
   assert.equal(parseGitRemoteUrl("https://github.com/owner/repo/issues"), undefined);
+});
+
+test("parseGitUpstreamBranch keeps remote and branch names intact", () => {
+  assert.deepEqual(
+    parseGitUpstreamBranch("origin/feature/issue-123", "https://github.com/owner/repo.git"),
+    {
+      remote: "origin",
+      branch: "feature/issue-123",
+      repo: "owner/repo",
+    },
+  );
+  assert.equal(parseGitUpstreamBranch("main"), null);
+  assert.equal(parseGitUpstreamBranch("origin/"), null);
+});
+
+test("branchIssueNumbers extracts stable issue references from branch names", () => {
+  assert.deepEqual(branchIssueNumbers("feature/123-add-456-and-123"), [123, 456]);
+  assert.deepEqual(branchIssueNumbers("fix/#789-regression"), [789]);
+  assert.deepEqual(branchIssueNumbers("release/v1.2.3"), []);
 });
 
 test("detectTargetRepoFromGit parses GitHub remote URLs", () => {
