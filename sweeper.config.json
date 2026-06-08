@@ -1,5 +1,5 @@
 {
-  "targetRepo": "myorg/myrepo",
+  "targetRepo": null,
   "docsUrl": null,
   "pluginEcosystem": null,
   "extraStopWords": [],

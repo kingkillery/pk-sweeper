@@ -1,0 +1,17 @@
+{
+  "name": "pk-sweeper",
+  "version": "1.0.0",
+  "description": "Safe GitHub issue and pull request review workflows using the local pk-sweeper CLI.",
+  "owner": {
+    "name": "Kade"
+  },
+  "plugins": [
+    {
+      "name": "pk-sweeper",
+      "displayName": "PK Sweeper",
+      "source": "./plugins/pk-sweeper",
+      "description": "Safe GitHub issue and pull request review workflows using the local pk-sweeper CLI.",
+      "category": "productivity"
+    }
+  ]
+}

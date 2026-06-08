@@ -6,12 +6,15 @@ import {
   auditFromSnapshot,
   auditHasStrictFailures,
   branchIssueNumbers,
+  codexConfigArgs,
   detectTargetRepoFromGit,
   ghRetryKind,
   isCodexReviewCommentBody,
+  isPlaceholderRepo,
   isProtectedItem,
   itemNumbersArg,
   parseDecision,
+  parseGitHubPullRequestUrl,
   parseGitRemoteUrl,
   parseGitUpstreamBranch,
   parseRepoFlag,
@@ -19,9 +22,11 @@ import {
   relatedTitleSearchTerms,
   reviewActionForDecision,
   safeOutputTail,
+  selectBalancedCandidates,
   shouldReviewItem,
   shouldRetryGh,
   shouldPlanItem,
+  summarizeLinearPrReviewerReport,
   validateCloseDecision,
 } from "../dist/pksweeper.js";
 
@@ -30,7 +35,7 @@ function item(overrides = {}) {
     number: 123,
     kind: "issue",
     title: "Sample item",
-    url: "https://github.com/openclaw/openclaw/issues/123",
+    url: "https://github.com/octocat/Hello-World/issues/123",
     createdAt: "2026-01-01T00:00:00Z",
     updatedAt: "2026-01-01T00:00:00Z",
     author: "contributor",
@@ -220,6 +225,22 @@ test("hot new items review hourly before falling back to daily or weekly cadence
   );
 });
 
+test("balanced selection keeps issues visible when PRs have higher cadence priority", () => {
+  const due = [
+    { item: item({ number: 14, kind: "pull_request" }), review: null, priority: 3, reviewedAt: 0 },
+    { item: item({ number: 15, kind: "pull_request" }), review: null, priority: 3, reviewedAt: 0 },
+    { item: item({ number: 1, kind: "issue" }), review: null, priority: 4, reviewedAt: 0 },
+  ];
+
+  assert.deepEqual(
+    selectBalancedCandidates(due, 2).map((candidate) => [candidate.number, candidate.kind]),
+    [
+      [14, "pull_request"],
+      [1, "issue"],
+    ],
+  );
+});
+
 test("invalid close semantics are rejected", () => {
   const mediumClose = reviewActionForDecision({
     item: item(),
@@ -256,6 +277,47 @@ test("invalid close semantics are rejected", () => {
   );
   assert.equal(missingSource.ok, false);
   assert.equal(missingSource.actionTaken, "skipped_invalid_decision");
+});
+
+test("codex provider config flags render TOML-safe overrides", () => {
+  assert.deepEqual(
+    codexConfigArgs({
+      reasoningEffort: "low",
+      serviceTier: "fast",
+      providerConfig: {
+        provider: "qwen",
+        providerName: "Qwen Model Studio",
+        providerBaseUrl: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+        providerEnvKey: "QWEN_API_KEY",
+      },
+    }),
+    [
+      "-c",
+      "model_reasoning_effort='low'",
+      "-c",
+      "service_tier='fast'",
+      "-c",
+      "approval_policy='never'",
+      "-c",
+      "model_provider='qwen'",
+      "-c",
+      "model_providers.qwen.name='Qwen Model Studio'",
+      "-c",
+      "model_providers.qwen.base_url='https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1'",
+      "-c",
+      "model_providers.qwen.env_key='QWEN_API_KEY'",
+    ],
+  );
+
+  assert.throws(
+    () =>
+      codexConfigArgs({
+        reasoningEffort: "low",
+        serviceTier: "fast",
+        providerConfig: { providerEnvKey: "QWEN_API_KEY" },
+      }),
+    /--codex-provider is required/,
+  );
 });
 
 test("duplicate or superseded closes are allowed with evidence and comment", () => {
@@ -369,6 +431,52 @@ test("decision parser enforces required schema-shaped evidence", () => {
       }),
     /decision\.evidence\[0\]\.file/,
   );
+});
+
+test("decision parser normalizes schema-adjacent Qwen output", () => {
+  const decision = parseDecision({
+    decision: "keep_open",
+    confidence: "high",
+    closeReason: null,
+    reason: "Maintainer-authored PR requires explicit judgment.",
+    closeComment: null,
+    fixedRelease: null,
+    fixedSha: null,
+    prAction: "none",
+    evidence: [
+      {
+        description: "Maintainer-authored PRs must be kept open.",
+        source: "GitHub PR metadata",
+      },
+      {
+        type: "pr_body",
+        detail: "This PR is a smoke-test artifact.",
+      },
+    ],
+    bestSolution: "Maintainer should decide what to do with this draft PR.",
+    relatedItems: [],
+  });
+
+  assert.equal(decision.closeReason, "none");
+  assert.equal(decision.summary, "Maintainer should decide what to do with this draft PR.");
+  assert.deepEqual(decision.evidence[0], {
+    label: "GitHub PR metadata",
+    detail: "Maintainer-authored PRs must be kept open.",
+    file: null,
+    line: null,
+    command: null,
+    sha: null,
+  });
+  assert.deepEqual(decision.evidence[1], {
+    label: "pr_body",
+    detail: "This PR is a smoke-test artifact.",
+    file: null,
+    line: null,
+    command: null,
+    sha: null,
+  });
+  assert.deepEqual(decision.risks, []);
+  assert.equal(decision.closeComment, "");
 });
 
 test("review parser strips environment access caveats from risks", () => {
@@ -497,8 +605,9 @@ test("GitHub retry classifier distinguishes throttle and transient failures", ()
   assert.equal(ghRetryKind(throttled), "throttle");
   assert.equal(shouldRetryGh(throttled), true);
 
-  const eof = Object.assign(new Error("Command failed: gh api repos/openclaw/openclaw/issues"), {
-    stderr: 'Get "https://api.github.com/repos/openclaw/openclaw/issues?page=54": unexpected EOF\n',
+  const eof = Object.assign(new Error("Command failed: gh api repos/octocat/Hello-World/issues"), {
+    stderr:
+      'Get "https://api.github.com/repos/octocat/Hello-World/issues?page=54": unexpected EOF\n',
   });
   assert.equal(ghRetryKind(eof), "transient");
   assert.equal(shouldRetryGh(eof), true);
@@ -518,7 +627,7 @@ test("GitHub retry classifier distinguishes throttle and transient failures", ()
   assert.equal(shouldRetryGh(authFailure), false);
 
   const authFailureForIssue502 = Object.assign(
-    new Error("Command failed: gh api repos/openclaw/openclaw/issues/502/comments"),
+    new Error("Command failed: gh api repos/octocat/Hello-World/issues/502/comments"),
     { stderr: "gh: HTTP 401: Bad credentials" },
   );
   assert.equal(ghRetryKind(authFailureForIssue502), "none");
@@ -531,38 +640,119 @@ test("safeOutputTail tolerates missing process output", () => {
 });
 
 test("parseRepoFlag extracts repo from --repo flag", () => {
-  assert.equal(parseRepoFlag(["--repo", "myorg/myrepo"]), "myorg/myrepo");
-  assert.equal(parseRepoFlag(["--repo=myorg/myrepo"]), "myorg/myrepo");
-  assert.equal(parseRepoFlag(["plan", "--repo", "myorg/myrepo"]), "myorg/myrepo");
+  assert.equal(parseRepoFlag(["--repo", "octocat/Hello-World"]), "octocat/Hello-World");
+  assert.equal(parseRepoFlag(["--repo=octocat/Hello-World"]), "octocat/Hello-World");
+  assert.equal(parseRepoFlag(["plan", "--repo", "octocat/Hello-World"]), "octocat/Hello-World");
   assert.equal(parseRepoFlag(["--other", "value"]), undefined);
   assert.equal(parseRepoFlag([]), undefined);
   // --repo followed by another flag is ignored (no value)
   assert.equal(parseRepoFlag(["--repo", "--other"]), undefined);
 });
 
+test("placeholder repository values are detected", () => {
+  assert.equal(isPlaceholderRepo("owner/repo"), true);
+  assert.equal(isPlaceholderRepo("octocat/Hello-World"), false);
+  assert.equal(isPlaceholderRepo(undefined), false);
+});
+
 test("parseGitRemoteUrl parses SSH and HTTPS GitHub remote URLs", () => {
   // SSH formats
-  assert.equal(parseGitRemoteUrl("git@github.com:owner/repo.git"), "owner/repo");
-  assert.equal(parseGitRemoteUrl("git@github.com:owner/repo"), "owner/repo");
-  assert.equal(parseGitRemoteUrl("git@github.com:myorg/myrepo.git"), "myorg/myrepo");
+  assert.equal(parseGitRemoteUrl("git@github.com:octocat/Hello-World.git"), "octocat/Hello-World");
+  assert.equal(parseGitRemoteUrl("git@github.com:octocat/Hello-World"), "octocat/Hello-World");
   // HTTPS formats
-  assert.equal(parseGitRemoteUrl("https://github.com/owner/repo.git"), "owner/repo");
-  assert.equal(parseGitRemoteUrl("https://github.com/owner/repo"), "owner/repo");
-  assert.equal(parseGitRemoteUrl("http://github.com/owner/repo"), "owner/repo");
+  assert.equal(
+    parseGitRemoteUrl("https://github.com/octocat/Hello-World.git"),
+    "octocat/Hello-World",
+  );
+  assert.equal(parseGitRemoteUrl("https://github.com/octocat/Hello-World"), "octocat/Hello-World");
+  assert.equal(parseGitRemoteUrl("http://github.com/octocat/Hello-World"), "octocat/Hello-World");
   // Non-GitHub or malformed URLs return undefined
-  assert.equal(parseGitRemoteUrl("https://gitlab.com/owner/repo.git"), undefined);
+  assert.equal(parseGitRemoteUrl("https://gitlab.com/octocat/Hello-World.git"), undefined);
   assert.equal(parseGitRemoteUrl("not-a-url"), undefined);
   // Trailing paths are rejected (stricter matching)
-  assert.equal(parseGitRemoteUrl("https://github.com/owner/repo/issues"), undefined);
+  assert.equal(parseGitRemoteUrl("https://github.com/octocat/Hello-World/issues"), undefined);
+});
+
+test("parseGitHubPullRequestUrl accepts GitHub and Linear review PR URLs", () => {
+  assert.deepEqual(parseGitHubPullRequestUrl("https://github.com/octocat/Hello-World/pull/42"), {
+    repo: "octocat/Hello-World",
+    number: 42,
+    url: "https://github.com/octocat/Hello-World/pull/42",
+  });
+  assert.deepEqual(
+    parseGitHubPullRequestUrl("https://linear.review/octocat/Hello-World/pull/42?focused=1"),
+    {
+      repo: "octocat/Hello-World",
+      number: 42,
+      url: "https://github.com/octocat/Hello-World/pull/42",
+    },
+  );
+  assert.equal(parseGitHubPullRequestUrl("https://github.com/octocat/Hello-World/issues/42"), null);
+  assert.equal(parseGitHubPullRequestUrl("not-a-url"), null);
+});
+
+test("summarizeLinearPrReviewerReport extracts machine-readable reviewer output", () => {
+  const markdown = `${reportFrontMatter({
+    number: 42,
+    type: "pull_request",
+    title: JSON.stringify("Manual agent PR"),
+    decision: "keep_open",
+    close_reason: "none",
+    confidence: "high",
+    action_taken: "kept_open",
+    pr_action: "request_changes",
+    review_status: "complete",
+    local_checkout_access: "verified",
+  })}
+
+# Report
+
+## Summary
+
+Needs one small fix before merge.
+
+## Best Possible Solution
+
+Patch the failing assertion and rerun verification.
+`;
+
+  assert.deepEqual(
+    summarizeLinearPrReviewerReport(markdown, {
+      repo: "octocat/Hello-World",
+      prUrl: "https://github.com/octocat/Hello-World/pull/42",
+      reportPath: "artifacts/reviews/42.md",
+      linearIssue: "PK-42",
+      manualRunUrl: "https://manual-agent.example.com/runs/manual-1",
+    }),
+    {
+      number: 42,
+      repo: "octocat/Hello-World",
+      prUrl: "https://github.com/octocat/Hello-World/pull/42",
+      linearIssue: "PK-42",
+      manualRunUrl: "https://manual-agent.example.com/runs/manual-1",
+      reportPath: "artifacts/reviews/42.md",
+      title: "Manual agent PR",
+      decision: "keep_open",
+      prAction: "request_changes",
+      confidence: "high",
+      actionTaken: "kept_open",
+      reviewStatus: "complete",
+      summary: "Needs one small fix before merge.",
+      bestSolution: "Patch the failing assertion and rerun verification.",
+    },
+  );
 });
 
 test("parseGitUpstreamBranch keeps remote and branch names intact", () => {
   assert.deepEqual(
-    parseGitUpstreamBranch("origin/feature/issue-123", "https://github.com/owner/repo.git"),
+    parseGitUpstreamBranch(
+      "origin/feature/issue-123",
+      "https://github.com/octocat/Hello-World.git",
+    ),
     {
       remote: "origin",
       branch: "feature/issue-123",
-      repo: "owner/repo",
+      repo: "octocat/Hello-World",
     },
   );
   assert.equal(parseGitUpstreamBranch("main"), null);

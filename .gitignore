@@ -5,3 +5,6 @@ dist/
 .artifacts/
 artifacts/
 tmp/
+
+# npm pack artifacts
+*.tgz

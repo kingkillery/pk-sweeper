@@ -6,6 +6,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   renameSync,
   statSync,
@@ -173,11 +174,19 @@ interface ReviewRuntime {
   reasoningEffort: string;
   sandboxMode?: string;
   serviceTier?: string;
+  codexProvider?: string | undefined;
 }
 
 interface ReviewOutcome {
   decision: Decision;
   status: ReviewStatus;
+}
+
+interface CodexProviderConfig {
+  provider?: string | undefined;
+  providerName?: string | undefined;
+  providerBaseUrl?: string | undefined;
+  providerEnvKey?: string | undefined;
 }
 
 interface DashboardItem {
@@ -274,6 +283,29 @@ interface ApplyResult {
   number: number;
   action: ActionTaken;
   reason: string;
+}
+
+interface GitHubPullRequestRef {
+  repo: string;
+  number: number;
+  url: string;
+}
+
+interface LinearPrReviewerSummary {
+  number: number;
+  repo: string;
+  prUrl: string;
+  linearIssue: string | undefined;
+  manualRunUrl: string | undefined;
+  reportPath: string;
+  title: string;
+  decision: string;
+  prAction: string;
+  confidence: string;
+  actionTaken: string;
+  reviewStatus: string;
+  summary: string;
+  bestSolution: string;
 }
 
 interface ReconcileResult {
@@ -390,14 +422,54 @@ export function parseRepoFlag(argv: string[]): string | undefined {
   return undefined;
 }
 
+export function isPlaceholderRepo(value: string | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return (
+    normalized === "owner/repo" ||
+    normalized === "your-org/your-repo" ||
+    normalized === "yourorg/yourrepo"
+  );
+}
+
+function placeholderRepoValues(...values: Array<string | undefined>): string[] {
+  return [
+    ...new Set(
+      values
+        .filter((value): value is string => typeof value === "string" && isPlaceholderRepo(value))
+        .map((value) => `"${value}"`),
+    ),
+  ];
+}
+
 export function parseGitRemoteUrl(url: string): string | undefined {
-  // ssh: git@github.com:owner/repo.git or git@github.com:owner/repo
+  // ssh: git@github.com:example-org/example-repo.git
   const sshMatch = url.match(/^git@github\.com:([^/]+\/[^/]+?)(?:\.git)?$/);
   if (sshMatch?.[1]) return sshMatch[1];
-  // https: https://github.com/owner/repo.git or https://github.com/owner/repo
+  // https: https://github.com/example-org/example-repo.git
   const httpsMatch = url.match(/^https?:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?$/);
   if (httpsMatch?.[1]) return httpsMatch[1];
   return undefined;
+}
+
+export function parseGitHubPullRequestUrl(value: string): GitHubPullRequestRef | null {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  const host = url.hostname.toLowerCase();
+  if (host !== "github.com" && host !== "linear.review") return null;
+  const [owner, repo, kind, numberText] = url.pathname.split("/").filter(Boolean);
+  if (!owner || !repo || kind !== "pull" || !numberText) return null;
+  const number = Number(numberText);
+  if (!Number.isInteger(number) || number <= 0) return null;
+  return {
+    repo: `${owner}/${repo}`,
+    number,
+    url: `https://github.com/${owner}/${repo}/pull/${number}`,
+  };
 }
 
 export function detectTargetRepoFromGit(): string | undefined {
@@ -456,23 +528,39 @@ export function branchIssueNumbers(branch: string): number[] {
 }
 
 function resolveTargetRepo(config: SweeperConfig): string {
-  // Priority: --repo flag > PKSWEEPER_TARGET_REPO env var > config file > git remote auto-detection
+  // Priority: explicit flag/env > current git remote > non-placeholder config.
   const fromFlag = parseRepoFlag(process.argv.slice(2));
-  if (fromFlag) return fromFlag;
+  if (fromFlag && !isPlaceholderRepo(fromFlag)) return fromFlag;
   const fromEnv = process.env.PKSWEEPER_TARGET_REPO ?? process.env.GH_REPO;
-  if (fromEnv && fromEnv.includes("/")) return fromEnv;
-  if (typeof config.targetRepo === "string" && config.targetRepo.includes("/")) {
+  if (fromEnv && fromEnv.includes("/") && !isPlaceholderRepo(fromEnv)) return fromEnv;
+  const ignored = placeholderRepoValues(fromFlag, fromEnv, config.targetRepo);
+  const fromGit = detectTargetRepoFromGit();
+  if (fromGit) {
+    if (ignored.length) {
+      console.error(
+        `[repo] ignored placeholder repo value(s): ${ignored.join(", ")}; using git origin ${fromGit}`,
+      );
+    }
+    return fromGit;
+  }
+  if (
+    typeof config.targetRepo === "string" &&
+    config.targetRepo.includes("/") &&
+    !isPlaceholderRepo(config.targetRepo)
+  ) {
     return config.targetRepo;
   }
-  const fromGit = detectTargetRepoFromGit();
-  if (fromGit) return fromGit;
+  const ignoredLine = ignored.length
+    ? `\nIgnored placeholder repo value(s): ${[...new Set(ignored)].join(", ")}.\n`
+    : "\n";
   throw new Error(
     "Could not determine target repository. Specify it via one of:\n" +
-      '  • sweeper.config.json: { "targetRepo": "owner/repo" }\n' +
-      "  • --repo owner/repo CLI flag\n" +
-      "  • PKSWEEPER_TARGET_REPO=owner/repo environment variable\n" +
-      "  • GH_REPO=owner/repo environment variable\n" +
-      "  • Running from inside a local git repo with a GitHub remote origin",
+      "  - running from inside a local git repo with a GitHub origin remote\n" +
+      "  - --repo <owner>/<repo> CLI flag\n" +
+      "  - PKSWEEPER_TARGET_REPO=<owner>/<repo> environment variable\n" +
+      "  - GH_REPO=<owner>/<repo> environment variable\n" +
+      '  - sweeper.config.json: { "targetRepo": "<owner>/<repo>" }\n' +
+      ignoredLine,
   );
 }
 
@@ -492,7 +580,7 @@ const CONFIG = loadConfig();
 const HELP_REQUESTED = process.argv
   .slice(2)
   .some((arg) => arg === "--help" || arg === "-h" || arg === "help");
-const TARGET_REPO = HELP_REQUESTED ? "owner/repo" : resolveTargetRepo(CONFIG);
+const TARGET_REPO = HELP_REQUESTED ? "example-org/example-repo" : resolveTargetRepo(CONFIG);
 const REPORT_REPO = process.env.GITHUB_REPOSITORY ?? CONFIG.reportRepo ?? TARGET_REPO;
 const PLUGIN_ECOSYSTEM: { name: string; url: string } | null = CONFIG.pluginEcosystem ?? null;
 const PLUGIN_ECOSYSTEM_NAME: string = PLUGIN_ECOSYSTEM?.name ?? "plugin ecosystem";
@@ -590,6 +678,73 @@ function boolArg(value: string | boolean | string[] | undefined): boolean {
   if (typeof value === "boolean") return value;
   if (typeof value !== "string") return false;
   return value === "1" || value === "true" || value === "yes";
+}
+
+function falseArg(value: string | boolean | string[] | undefined): boolean {
+  if (typeof value === "boolean") return false;
+  if (typeof value !== "string") return false;
+  return value === "0" || value === "false" || value === "no";
+}
+
+function optionalStringArg(value: string | boolean | string[] | undefined): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function codexProviderConfigFromArgs(args: Args): CodexProviderConfig {
+  return {
+    provider: optionalStringArg(args.codex_provider),
+    providerName: optionalStringArg(args.codex_provider_name),
+    providerBaseUrl: optionalStringArg(args.codex_provider_base_url),
+    providerEnvKey: optionalStringArg(args.codex_provider_env_key),
+  };
+}
+
+function tomlString(value: string): string {
+  if (!value.includes("'") && !value.includes("\n") && !value.includes("\r")) {
+    return `'${value}'`;
+  }
+  return JSON.stringify(value);
+}
+
+function validateTomlBareKeySegment(value: string, label: string): void {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new Error(`${label} must contain only letters, numbers, underscores, or hyphens.`);
+  }
+}
+
+export function codexConfigArgs(options: {
+  reasoningEffort: string;
+  serviceTier: string;
+  providerConfig?: CodexProviderConfig | undefined;
+}): string[] {
+  const config = options.providerConfig;
+  const pairs = [
+    `model_reasoning_effort=${tomlString(options.reasoningEffort)}`,
+    `service_tier=${tomlString(options.serviceTier)}`,
+    "approval_policy='never'",
+  ];
+  if (config?.provider) {
+    validateTomlBareKeySegment(config.provider, "--codex-provider");
+    pairs.push(`model_provider=${tomlString(config.provider)}`);
+    if (config.providerName) {
+      pairs.push(`model_providers.${config.provider}.name=${tomlString(config.providerName)}`);
+    }
+    if (config.providerBaseUrl) {
+      pairs.push(
+        `model_providers.${config.provider}.base_url=${tomlString(config.providerBaseUrl)}`,
+      );
+    }
+    if (config.providerEnvKey) {
+      pairs.push(`model_providers.${config.provider}.env_key=${tomlString(config.providerEnvKey)}`);
+    }
+  } else if (config?.providerName || config?.providerBaseUrl || config?.providerEnvKey) {
+    throw new Error(
+      "--codex-provider is required when --codex-provider-name, --codex-provider-base-url, or --codex-provider-env-key is set.",
+    );
+  } else {
+    pairs.push("forced_login_method='api'");
+  }
+  return pairs.flatMap((pair) => ["-c", pair]);
 }
 
 function pathListArg(value: string | boolean | string[] | undefined): string[] {
@@ -702,6 +857,25 @@ function preflightCodexBin(command: CodexCommand, cwd: string): void {
         safeOutputTail(spawnOutputText(result.stderr)) ??
         `exit ${result.status}`
       }`,
+    );
+  }
+}
+
+function preflightGhAuth(cwd: string): void {
+  const result = spawnSync("gh", ["auth", "status"], {
+    cwd,
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error || result.status !== 0) {
+    const detail =
+      result.error?.message ||
+      safeOutputTail(spawnOutputText(result.stderr)) ||
+      safeOutputTail(spawnOutputText(result.stdout)) ||
+      `exit ${result.status}`;
+    throw new Error(
+      `GitHub CLI preflight failed. Run \`gh auth status\` or \`gh auth login\`. ${detail}`,
     );
   }
 }
@@ -955,6 +1129,7 @@ function reviewPolicyHash(options: {
   reasoningEffort?: string;
   sandboxMode?: string;
   serviceTier?: string;
+  providerConfig?: CodexProviderConfig;
 }): string {
   return sha256(
     stableJson({
@@ -964,6 +1139,7 @@ function reviewPolicyHash(options: {
       reasoningEffort: options.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
       sandboxMode: options.sandboxMode ?? "read-only",
       serviceTier: options.serviceTier ?? DEFAULT_SERVICE_TIER,
+      providerConfig: options.providerConfig ?? {},
       prompt: readFileSync(packageAssetPath("prompts", "review-item.md"), "utf8"),
       schema: readFileSync(packageAssetPath("schema", "pksweeper-decision.schema.json"), "utf8"),
     }),
@@ -1011,7 +1187,7 @@ function requireStringArray(value: unknown, path: string): string[] {
 }
 
 function isEnvironmentAccessCaveat(value: string): boolean {
-  return /(?:GH_TOKEN|GITHUB_TOKEN|OPENCLAW_GH_TOKEN|authenticated gh|gh (?:was |is )?unavailable|unauthenticated gh|shallow clone|GitHub auth(?:entication)? (?:was |is )?unavailable|could not use authenticated GitHub)/i.test(
+  return /(?:GH_TOKEN|GITHUB_TOKEN|PKSWEEPER_GH_TOKEN|authenticated gh|gh (?:was |is )?unavailable|unauthenticated gh|shallow clone|GitHub auth(?:entication)? (?:was |is )?unavailable|could not use authenticated GitHub)/i.test(
     value,
   );
 }
@@ -1029,16 +1205,80 @@ function parseEvidence(value: unknown, path: string): Evidence {
   };
 }
 
+function normalizeEvidenceInput(value: unknown, index: number): Record<string, unknown> {
+  const record = requireRecord(value, `decision.evidence[${index}]`);
+  if (typeof record.label === "string" && typeof record.detail === "string") {
+    return record;
+  }
+  return {
+    label:
+      typeof record.label === "string" && record.label.trim()
+        ? record.label
+        : typeof record.source === "string" && record.source.trim()
+          ? record.source
+          : typeof record.type === "string" && record.type.trim()
+            ? record.type
+            : `evidence ${index + 1}`,
+    detail:
+      typeof record.detail === "string" && record.detail.trim()
+        ? record.detail
+        : typeof record.description === "string" && record.description.trim()
+          ? record.description
+          : JSON.stringify(record),
+    file: typeof record.file === "string" || record.file === null ? record.file : null,
+    line: typeof record.line === "number" || record.line === null ? record.line : null,
+    command: typeof record.command === "string" || record.command === null ? record.command : null,
+    sha: typeof record.sha === "string" || record.sha === null ? record.sha : null,
+  };
+}
+
 function requireEnum<T extends string>(value: unknown, allowed: Set<T>, path: string): T {
   if (typeof value === "string" && allowed.has(value as T)) return value as T;
   throw new Error(`${path} has invalid value`);
 }
 
-export function parseDecision(value: unknown): Decision {
+function normalizeDecisionInput(value: unknown): Record<string, unknown> {
   const record = requireRecord(value, "decision");
+  const normalized: Record<string, unknown> = { ...record };
+  if (
+    typeof normalized.closeReason !== "string" ||
+    !ALL_REASONS.has(normalized.closeReason as CloseReason)
+  ) {
+    normalized.closeReason =
+      typeof record.reason === "string" && ALL_REASONS.has(record.reason as CloseReason)
+        ? record.reason
+        : "none";
+  }
+  if (typeof normalized.summary !== "string") {
+    normalized.summary =
+      typeof record.bestSolution === "string" && record.bestSolution.trim()
+        ? record.bestSolution
+        : "No summary provided.";
+  }
+  if (!Array.isArray(normalized.risks)) {
+    normalized.risks = [];
+  }
+  if (normalized.closeComment === null || normalized.closeComment === undefined) {
+    normalized.closeComment = "";
+  }
+  if (normalized.fixedRelease === undefined) {
+    normalized.fixedRelease = null;
+  }
+  if (normalized.fixedSha === undefined) {
+    normalized.fixedSha = null;
+  }
+  delete normalized.reason;
+  delete normalized.relatedItems;
+  return normalized;
+}
+
+export function parseDecision(value: unknown): Decision {
+  const record = normalizeDecisionInput(value);
   rejectUnexpectedKeys(record, DECISION_SCHEMA_KEYS, "decision");
   const evidence = Array.isArray(record.evidence)
-    ? record.evidence.map((entry, index) => parseEvidence(entry, `decision.evidence[${index}]`))
+    ? record.evidence.map((entry, index) =>
+        parseEvidence(normalizeEvidenceInput(entry, index), `decision.evidence[${index}]`),
+      )
     : (() => {
         throw new Error("decision.evidence must be an array");
       })();
@@ -1470,9 +1710,9 @@ function compactPullCommit(value: unknown): unknown {
 }
 
 function ghPaged<T>(path: string): T[] {
-  const pages = ghJson<unknown[]>(["api", path, "--paginate", "--slurp"]);
+  const pages = ghJsonLines<unknown>(["api", path, "--paginate"]);
   if (!Array.isArray(pages)) return [];
-  return pages.flatMap((page) => (Array.isArray(page) ? (page as T[]) : []));
+  return pages.flatMap((page) => (Array.isArray(page) ? (page as T[]) : [page as T]));
 }
 
 function ensureDir(path: string): void {
@@ -1689,6 +1929,23 @@ function compareDueCandidates(left: DueCandidate, right: DueCandidate): number {
     left.reviewedAt - right.reviewedAt ||
     left.item.number - right.item.number
   );
+}
+
+export function selectBalancedCandidates(due: DueCandidate[], limit: number): Item[] {
+  const sorted = [...due].sort(compareDueCandidates);
+  if (limit <= 0) return [];
+  if (limit === 1) return sorted.slice(0, 1).map(({ item }) => item);
+
+  const selected = new Map<number, DueCandidate>();
+  for (const kind of ["issue", "pull_request"] as const) {
+    const candidate = sorted.find((entry) => entry.item.kind === kind);
+    if (candidate) selected.set(candidate.item.number, candidate);
+  }
+  for (const candidate of sorted) {
+    if (selected.size >= limit) break;
+    selected.set(candidate.item.number, candidate);
+  }
+  return [...selected.values()].sort(compareDueCandidates).map(({ item }) => item);
 }
 
 function fetchOpenItemPage(
@@ -2041,6 +2298,7 @@ function planCandidates(options: {
   hotIntake?: boolean;
   force?: boolean;
   includeExcluded?: boolean;
+  balanceKinds?: boolean;
 }): { shards: PlanShard[]; scannedPages: number; candidates: Item[] } {
   if (options.itemNumber) {
     const { item, state } = fetchItem(options.itemNumber);
@@ -2068,10 +2326,12 @@ function planCandidates(options: {
       );
       if (candidate) due.push(candidate);
     }
-    const candidates = due
-      .sort(compareDueCandidates)
-      .slice(0, limit)
-      .map(({ item }) => item);
+    const candidates = options.balanceKinds
+      ? selectBalancedCandidates(due, limit)
+      : due
+          .sort(compareDueCandidates)
+          .slice(0, limit)
+          .map(({ item }) => item);
     const shards = Array.from(
       { length: Math.max(1, Math.min(options.shardCount, candidates.length || 1)) },
       (_, shard) => ({ shard, itemNumbers: [] as number[] }),
@@ -2098,10 +2358,12 @@ function planCandidates(options: {
       if (candidate) due.push(candidate);
     }
   }
-  const candidates = due
-    .sort(compareDueCandidates)
-    .slice(0, limit)
-    .map(({ item }) => item);
+  const candidates = options.balanceKinds
+    ? selectBalancedCandidates(due, limit)
+    : due
+        .sort(compareDueCandidates)
+        .slice(0, limit)
+        .map(({ item }) => item);
 
   const shards = Array.from(
     { length: Math.max(1, Math.min(options.shardCount, candidates.length || 1)) },
@@ -2299,7 +2561,7 @@ function codexEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   delete env.GH_TOKEN;
   delete env.GITHUB_TOKEN;
-  delete env.OPENCLAW_GH_TOKEN;
+  delete env.PKSWEEPER_GH_TOKEN;
   delete env.OPENAI_API_KEY;
   delete env.CODEX_API_KEY;
   env.GIT_OPTIONAL_LOCKS = "0";
@@ -2325,6 +2587,37 @@ function targetDirtyStatus(targetDir: string, ignoredPaths: string[] = []): stri
       );
     })
     .join("\n");
+}
+
+function assertQuickPreflight(options: {
+  targetDir: string;
+  workspace: string;
+  legacyWorkspace: string;
+  codexCommand: CodexCommand;
+  allowDirty: boolean;
+}): void {
+  if (isPlaceholderRepo(TARGET_REPO)) {
+    throw new Error(
+      `Cannot sweep: target repo resolved to placeholder "${TARGET_REPO}". Run from the target repo checkout or pass --repo <owner>/<repo>.`,
+    );
+  }
+
+  preflightGhAuth(options.targetDir);
+  preflightCodexBin(options.codexCommand, options.targetDir);
+  const dirty = targetDirtyStatus(options.targetDir, [options.workspace, options.legacyWorkspace]);
+  if (dirty && !options.allowDirty) {
+    throw new Error(
+      `Cannot sweep: target checkout is dirty before review.\n${dirty}\n\nCommit, stash, or clean these changes, or pass --allow-dirty if this is intentional.`,
+    );
+  }
+
+  console.error("[preflight] ok");
+  console.error(`[preflight] repo=${TARGET_REPO}`);
+  console.error(`[preflight] cwd=${process.cwd()}`);
+  console.error(`[preflight] target_dir=${options.targetDir}`);
+  console.error(`[preflight] workspace=${options.workspace}`);
+  console.error(`[preflight] codex=${options.codexCommand.display}`);
+  console.error(`[preflight] checkout=${dirty ? "dirty (allowed)" : "clean"}`);
 }
 
 function makeTreeReadOnly(path: string): void {
@@ -2370,6 +2663,7 @@ function repairDecisionFromUnstructuredOutput(options: {
   model: string;
   reasoningEffort: string;
   serviceTier: string;
+  providerConfig?: CodexProviderConfig;
   sandboxMode: string;
   timeoutMs: number;
   raw: string;
@@ -2400,14 +2694,11 @@ ${trimMiddle(options.raw, 40_000)}
       "exec",
       "-m",
       options.model,
-      "-c",
-      `model_reasoning_effort="${options.reasoningEffort}"`,
-      "-c",
-      `service_tier="${options.serviceTier}"`,
-      "-c",
-      'forced_login_method="api"',
-      "-c",
-      'approval_policy="never"',
+      ...codexConfigArgs({
+        reasoningEffort: options.reasoningEffort,
+        serviceTier: options.serviceTier,
+        providerConfig: options.providerConfig,
+      }),
       "-C",
       options.targetDir,
       "--output-schema",
@@ -2447,6 +2738,7 @@ function runCodex(options: {
   reasoningEffort: string;
   sandboxMode: string;
   serviceTier: string;
+  providerConfig?: CodexProviderConfig;
   timeoutMs: number;
   workDir: string;
   codexCommand: CodexCommand;
@@ -2468,14 +2760,11 @@ function runCodex(options: {
       "exec",
       "-m",
       options.model,
-      "-c",
-      `model_reasoning_effort="${options.reasoningEffort}"`,
-      "-c",
-      `service_tier="${options.serviceTier}"`,
-      "-c",
-      'forced_login_method="api"',
-      "-c",
-      'approval_policy="never"',
+      ...codexConfigArgs({
+        reasoningEffort: options.reasoningEffort,
+        serviceTier: options.serviceTier,
+        providerConfig: options.providerConfig,
+      }),
       "-C",
       options.targetDir,
       "--output-schema",
@@ -2901,26 +3190,30 @@ function reportDecision(markdown: string, closeReason: CloseReason): Decision {
 function runtimeReviewText(runtime?: {
   model?: string | undefined;
   reasoningEffort?: string | undefined;
+  codexProvider?: string | undefined;
 }): string {
   const model = runtime?.model?.trim();
   const reasoningEffort = runtime?.reasoningEffort?.trim();
-  if (model && reasoningEffort) return `model ${model}, reasoning ${reasoningEffort}`;
-  if (model) return `model ${model}`;
-  if (reasoningEffort) return `reasoning ${reasoningEffort}`;
-  return "";
+  const codexProvider = runtime?.codexProvider?.trim();
+  const parts: string[] = [];
+  if (model) parts.push(`model ${model}`);
+  if (codexProvider) parts.push(`provider ${codexProvider}`);
+  if (reasoningEffort) parts.push(`reasoning ${reasoningEffort}`);
+  return parts.join(", ");
 }
 
 function runtimeReviewTextFromReport(markdown: string): string {
   return runtimeReviewText({
     model: frontMatterValue(markdown, "review_model") ?? "",
     reasoningEffort: frontMatterValue(markdown, "review_reasoning_effort") ?? "",
+    codexProvider: frontMatterValue(markdown, "review_codex_provider") ?? "",
   });
 }
 
 function closeReviewLineFromDecision(
   decision: Decision,
   git: GitInfo,
-  runtime?: Pick<ReviewRuntime, "model" | "reasoningEffort">,
+  runtime?: Pick<ReviewRuntime, "model" | "reasoningEffort" | "codexProvider">,
 ): string {
   const fixed = fixedInText(decision);
   const parts = [runtimeReviewText(runtime), `reviewed against ${linkedSha(git.mainSha)}`].filter(
@@ -2972,7 +3265,7 @@ function renderCloseCommentFromReport(markdown: string, reason: CloseReason): st
 function normalizeComment(
   decision: Decision,
   git: GitInfo,
-  runtime?: Pick<ReviewRuntime, "model" | "reasoningEffort">,
+  runtime?: Pick<ReviewRuntime, "model" | "reasoningEffort" | "codexProvider">,
 ): string {
   return renderCloseComment({
     reason: decision.closeReason,
@@ -3233,7 +3526,7 @@ export function reviewActionForDecision(options: {
   item: Item;
   decision: Decision;
   git: GitInfo;
-  runtime?: Pick<ReviewRuntime, "model" | "reasoningEffort">;
+  runtime?: Pick<ReviewRuntime, "model" | "reasoningEffort" | "codexProvider">;
 }): Action {
   if (
     options.item.kind === "pull_request" &&
@@ -3306,6 +3599,7 @@ fixed_sha: ${options.decision.fixedSha ?? "unknown"}
 review_policy: ${options.reviewPolicy}
 review_model: ${options.runtime.model}
 review_reasoning_effort: ${options.runtime.reasoningEffort}
+review_codex_provider: ${options.runtime.codexProvider ?? "default"}
 review_sandbox: ${options.runtime.sandboxMode ?? "unknown"}
 review_service_tier: ${options.runtime.serviceTier ?? "unknown"}
 review_mode: ${options.reviewMode}
@@ -3396,11 +3690,19 @@ function planCommand(args: Args): void {
   const shardCount = numberArg(args.shard_count, 50);
   const itemNumber = numberArg(args.item_number, 0) || undefined;
   const hotIntake = boolArg(args.hot_intake);
+  const balanceKinds = boolArg(args.balance_kinds);
   const model = stringArg(args.codex_model, DEFAULT_CODEX_MODEL);
   const reasoningEffort = stringArg(args.codex_reasoning_effort, DEFAULT_REASONING_EFFORT);
   const sandboxMode = stringArg(args.codex_sandbox, "read-only");
   const serviceTier = stringArg(args.codex_service_tier, DEFAULT_SERVICE_TIER);
-  const reviewPolicy = reviewPolicyHash({ model, reasoningEffort, sandboxMode, serviceTier });
+  const providerConfig = codexProviderConfigFromArgs(args);
+  const reviewPolicy = reviewPolicyHash({
+    model,
+    reasoningEffort,
+    sandboxMode,
+    serviceTier,
+    providerConfig,
+  });
   const planOptions: Parameters<typeof planCandidates>[0] = {
     batchSize,
     maxPages,
@@ -3410,6 +3712,7 @@ function planCommand(args: Args): void {
   };
   if (itemNumber) planOptions.itemNumber = itemNumber;
   if (hotIntake) planOptions.hotIntake = true;
+  if (balanceKinds) planOptions.balanceKinds = true;
   const plan = planCandidates(planOptions);
   console.log(
     JSON.stringify(
@@ -3428,9 +3731,7 @@ function planCommand(args: Args): void {
 }
 
 function reviewCommand(args: Args): void {
-  const targetDir = absoluteArgPath(
-    stringArg(args.target_dir ?? args.openclaw_dir, `../${TARGET_REPO.split("/")[1]}`),
-  );
+  const targetDir = absoluteArgPath(stringArg(args.target_dir, `../${TARGET_REPO.split("/")[1]}`));
   const artifactDir = absoluteArgPath(stringArg(args.artifact_dir, "artifacts/reviews"));
   const itemsDir = absoluteArgPath(stringArg(args.items_dir, join(ROOT, "items")));
   const batchSize = numberArg(args.batch_size, 5);
@@ -3439,6 +3740,7 @@ function reviewCommand(args: Args): void {
   const reasoningEffort = stringArg(args.codex_reasoning_effort, DEFAULT_REASONING_EFFORT);
   const sandboxMode = stringArg(args.codex_sandbox, "read-only");
   const serviceTier = stringArg(args.codex_service_tier, DEFAULT_SERVICE_TIER);
+  const providerConfig = codexProviderConfigFromArgs(args);
   const codexCommand = resolveCodexCommand(
     typeof args.codex_bin === "string" ? args.codex_bin : undefined,
   );
@@ -3454,7 +3756,7 @@ function reviewCommand(args: Args): void {
           .map((value) => Number(value.trim()))
           .filter((value) => Number.isInteger(value) && value > 0)
       : undefined;
-  const readonlyOpenclaw = boolArg(args.readonly_target ?? args.readonly_openclaw);
+  const readonlyTarget = boolArg(args.readonly_target);
   const skipGitFetch = boolArg(args.skip_git_fetch);
   const dirtyIgnorePaths = [
     ...pathListArg(args.dirty_ignore_dir),
@@ -3467,8 +3769,14 @@ function reviewCommand(args: Args): void {
   }
   ensureDir(artifactDir);
   const git = gitInfo(targetDir, { fetch: !skipGitFetch });
-  const reviewPolicy = reviewPolicyHash({ model, reasoningEffort, sandboxMode, serviceTier });
-  if (readonlyOpenclaw) makeTreeReadOnly(targetDir);
+  const reviewPolicy = reviewPolicyHash({
+    model,
+    reasoningEffort,
+    sandboxMode,
+    serviceTier,
+    providerConfig,
+  });
+  if (readonlyTarget) makeTreeReadOnly(targetDir);
   const selectionOptions: Parameters<typeof selectCandidates>[0] = {
     batchSize,
     maxPages,
@@ -3507,6 +3815,7 @@ function reviewCommand(args: Args): void {
         reasoningEffort,
         sandboxMode,
         serviceTier,
+        providerConfig,
         timeoutMs,
         workDir: join(artifactDir, "codex"),
         codexCommand,
@@ -3523,7 +3832,13 @@ function reviewCommand(args: Args): void {
       );
       reviewStatus = reviewStatusFromFailureDetail(detail);
     }
-    const runtime = { model, reasoningEffort, sandboxMode, serviceTier };
+    const runtime = {
+      model,
+      reasoningEffort,
+      sandboxMode,
+      serviceTier,
+      codexProvider: providerConfig.provider,
+    };
     const action = reviewActionForDecision({ item, decision, git, runtime });
     writeFileSync(
       join(artifactDir, `${item.number}.md`),
@@ -3549,6 +3864,101 @@ function reviewCommand(args: Args): void {
   console.error(
     `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} complete reviewed=${completed}`,
   );
+}
+
+export function summarizeLinearPrReviewerReport(
+  markdown: string,
+  options: {
+    repo: string;
+    prUrl: string;
+    reportPath: string;
+    linearIssue: string | undefined;
+    manualRunUrl: string | undefined;
+  },
+): LinearPrReviewerSummary {
+  return {
+    number: Number(frontMatterValue(markdown, "number") ?? 0),
+    repo: options.repo,
+    prUrl: options.prUrl,
+    linearIssue: options.linearIssue,
+    manualRunUrl: options.manualRunUrl,
+    reportPath: options.reportPath,
+    title: displayTitle(frontMatterValue(markdown, "title") ?? ""),
+    decision: frontMatterValue(markdown, "decision") ?? "unknown",
+    prAction: frontMatterValue(markdown, "pr_action") ?? "unknown",
+    confidence: frontMatterValue(markdown, "confidence") ?? "unknown",
+    actionTaken: frontMatterValue(markdown, "action_taken") ?? "unknown",
+    reviewStatus: effectiveReviewStatus(markdown),
+    summary: sectionValue(markdown, "Summary"),
+    bestSolution: sectionValue(markdown, "Best Possible Solution"),
+  };
+}
+
+function linearPrReviewerCommand(args: Args): void {
+  const prUrl = stringArg(args.pr_url ?? args.pull_request_url, "");
+  const ref = parseGitHubPullRequestUrl(prUrl);
+  if (!ref) {
+    throw new Error(
+      "linear-pr-reviewer requires --pr-url https://github.com/<owner>/<repo>/pull/<number>",
+    );
+  }
+  if (TARGET_REPO.toLowerCase() !== ref.repo.toLowerCase()) {
+    throw new Error(
+      `PR URL points at ${ref.repo}, but pk-sweeper target repo is ${TARGET_REPO}. Run with --repo ${ref.repo} or from that repository checkout.`,
+    );
+  }
+
+  const targetDir = absoluteArgPath(stringArg(args.target_dir, process.cwd()));
+  const workspace = absoluteArgPath(
+    stringArg(args.workspace, join(ROOT, "artifacts", "linear-pr-reviewer", String(ref.number))),
+  );
+  const artifactDir = absoluteArgPath(stringArg(args.artifact_dir, join(workspace, "reviews")));
+  const itemsDir = absoluteArgPath(stringArg(args.items_dir, join(workspace, "items")));
+  const output = typeof args.output === "string" ? absoluteArgPath(args.output) : undefined;
+  const dirtyIgnoreDirs = [
+    workspace,
+    ...pathListArg(args.dirty_ignore_dir),
+    ...pathListArg(args.dirty_ignore_dirs),
+  ];
+
+  ensureDir(workspace);
+  ensureDir(artifactDir);
+  ensureDir(itemsDir);
+  reviewCommand({
+    ...args,
+    target_dir: targetDir,
+    artifact_dir: artifactDir,
+    items_dir: itemsDir,
+    batch_size: "1",
+    max_pages: "1",
+    item_numbers: String(ref.number),
+    skip_git_fetch: args.skip_git_fetch ?? true,
+    dirty_ignore_dirs: dirtyIgnoreDirs.join(delimiter),
+  });
+
+  const reportPath = join(artifactDir, `${ref.number}.md`);
+  if (!existsSync(reportPath)) {
+    throw new Error(`linear-pr-reviewer did not produce expected report: ${reportPath}`);
+  }
+
+  const summary = summarizeLinearPrReviewerReport(readFileSync(reportPath, "utf8"), {
+    repo: ref.repo,
+    prUrl: ref.url,
+    reportPath,
+    linearIssue:
+      typeof args.linear_issue === "string"
+        ? args.linear_issue
+        : typeof args.linear_issue_id === "string"
+          ? args.linear_issue_id
+          : undefined,
+    manualRunUrl: typeof args.manual_run_url === "string" ? args.manual_run_url : undefined,
+  });
+  const json = `${JSON.stringify(summary, null, 2)}\n`;
+  if (output) {
+    ensureDir(dirname(output));
+    writeFileSync(output, json, "utf8");
+  }
+  console.log(json.trimEnd());
 }
 
 function isGitCheckout(path: string): boolean {
@@ -3656,6 +4066,7 @@ function runCodebaseGapReview(options: {
   model: string;
   reasoningEffort: string;
   serviceTier: string;
+  providerConfig?: CodexProviderConfig;
   sandboxMode: string;
   timeoutMs: number;
   createIssues: boolean;
@@ -3673,14 +4084,11 @@ Return JSON with an "issues" array. Each issue needs title, body, labels, and pr
       "exec",
       "-m",
       options.model,
-      "-c",
-      `model_reasoning_effort="${options.reasoningEffort}"`,
-      "-c",
-      `service_tier="${options.serviceTier}"`,
-      "-c",
-      'forced_login_method="api"',
-      "-c",
-      'approval_policy="never"',
+      ...codexConfigArgs({
+        reasoningEffort: options.reasoningEffort,
+        serviceTier: options.serviceTier,
+        providerConfig: options.providerConfig,
+      }),
       "-C",
       options.targetDir,
       "--output-schema",
@@ -3950,25 +4358,39 @@ async function quickCommand(args: Args): Promise<void> {
   const reasoningEffort = stringArg(args.codex_reasoning_effort, "medium");
   const sandboxMode = stringArg(args.codex_sandbox, "read-only");
   const serviceTier = stringArg(args.codex_service_tier, DEFAULT_SERVICE_TIER);
+  const providerConfig = codexProviderConfigFromArgs(args);
   const codexCommand = resolveCodexCommand(
     typeof args.codex_bin === "string" ? args.codex_bin : undefined,
   );
   const timeoutMs = numberArg(args.codex_timeout_ms, 600_000);
   const hotIntake = boolArg(args.hot_intake);
+  const balanceKinds = boolArg(args.balance_kinds) || !falseArg(args.balance_kinds);
   const itemNumber = numberArg(args.item_number, 0) || undefined;
   const createIssues = boolArg(args.create_issues);
+  const allowDirty = boolArg(args.allow_dirty);
 
+  ensureTargetCheckout(targetDir);
+  assertQuickPreflight({
+    targetDir,
+    workspace,
+    legacyWorkspace,
+    codexCommand,
+    allowDirty,
+  });
   ensureDir(workspace);
   ensureDir(itemsDir);
   ensureDir(closedDir);
   ensureDir(artifactDir);
-  ensureTargetCheckout(targetDir);
-  console.error(`[quick] using Codex executable: ${codexCommand.display}`);
-  preflightCodexBin(codexCommand, targetDir);
   console.error("[quick] refreshing target git metadata before starting shards");
   gitInfo(targetDir);
 
-  const reviewPolicy = reviewPolicyHash({ model, reasoningEffort, sandboxMode, serviceTier });
+  const reviewPolicy = reviewPolicyHash({
+    model,
+    reasoningEffort,
+    sandboxMode,
+    serviceTier,
+    providerConfig,
+  });
   const planOptions: Parameters<typeof planCandidates>[0] = {
     batchSize,
     maxPages,
@@ -3978,6 +4400,7 @@ async function quickCommand(args: Args): Promise<void> {
   };
   if (itemNumber) planOptions.itemNumber = itemNumber;
   if (hotIntake) planOptions.hotIntake = true;
+  if (balanceKinds) planOptions.balanceKinds = true;
   if (!boolArg(args.respect_cadence)) planOptions.force = true;
   if (!boolArg(args.respect_exclusions)) planOptions.includeExcluded = true;
   const plan = planCandidates(planOptions);
@@ -4004,6 +4427,7 @@ async function quickCommand(args: Args): Promise<void> {
       model,
       reasoningEffort,
       serviceTier,
+      providerConfig,
       sandboxMode,
       timeoutMs,
       createIssues,
@@ -4044,6 +4468,16 @@ async function quickCommand(args: Args): Promise<void> {
         sandboxMode,
         "--codex-service-tier",
         serviceTier,
+        ...(providerConfig.provider ? ["--codex-provider", providerConfig.provider] : []),
+        ...(providerConfig.providerName
+          ? ["--codex-provider-name", providerConfig.providerName]
+          : []),
+        ...(providerConfig.providerBaseUrl
+          ? ["--codex-provider-base-url", providerConfig.providerBaseUrl]
+          : []),
+        ...(providerConfig.providerEnvKey
+          ? ["--codex-provider-env-key", providerConfig.providerEnvKey]
+          : []),
         "--codex-bin",
         codexCommand.source,
         "--codex-timeout-ms",
@@ -4087,6 +4521,24 @@ async function quickCommand(args: Args): Promise<void> {
     `[quick] wrote ${join(workspace, "quick-summary.md")}, ${join(workspace, "todo.md")}, and ${join(workspace, "plan.md")}`,
   );
   if (failed > 0) process.exit(1);
+}
+
+async function sweepCommand(args: Args): Promise<void> {
+  const sweepArgs: Args = {
+    ...args,
+    agents: args.agents ?? "4",
+    concurrency: args.concurrency ?? "2",
+    batch_size: args.batch_size ?? "1",
+    max_pages: args.max_pages ?? "5",
+    balance_kinds: args.balance_kinds ?? true,
+  };
+  if (!sweepArgs.target_dir && isGitCheckout(process.cwd())) {
+    sweepArgs.target_dir = process.cwd();
+  }
+  console.error(
+    "[sweep] running safe recommendation sweep; this writes reports only and does not apply decisions",
+  );
+  await quickCommand(sweepArgs);
 }
 
 function applyDecisionsCommand(args: Args): void {
@@ -5037,29 +5489,26 @@ Return a concise Markdown review. Lead with concrete findings ordered by severit
 }
 
 function codebaseReviewCommand(args: Args): void {
-  const targetDir = resolve(stringArg(args.target_dir ?? args.openclaw_dir, process.cwd()));
+  const targetDir = resolve(stringArg(args.target_dir, process.cwd()));
   const artifactDir = resolve(stringArg(args.artifact_dir, "artifacts/codebase-review"));
   const model = stringArg(args.codex_model, DEFAULT_CODEX_MODEL);
   const reasoningEffort = stringArg(args.codex_reasoning_effort, DEFAULT_REASONING_EFFORT);
   const sandboxMode = stringArg(args.codex_sandbox, "read-only");
   const serviceTier = stringArg(args.codex_service_tier, DEFAULT_SERVICE_TIER);
+  const providerConfig = codexProviderConfigFromArgs(args);
+  const codexCommand = resolveCodexCommand(
+    typeof args.codex_bin === "string" ? args.codex_bin : undefined,
+  );
   const timeoutMs = numberArg(args.codex_timeout_ms, 600_000);
   ensureDir(artifactDir);
   const outputPath = join(artifactDir, "review.md");
-  const result = spawnSync(
-    "codex",
+  const result = codexSpawnSync(
+    codexCommand,
     [
       "exec",
       "-m",
       model,
-      "-c",
-      `model_reasoning_effort="${reasoningEffort}"`,
-      "-c",
-      `service_tier="${serviceTier}"`,
-      "-c",
-      'forced_login_method="api"',
-      "-c",
-      'approval_policy="never"',
+      ...codexConfigArgs({ reasoningEffort, serviceTier, providerConfig }),
       "-C",
       targetDir,
       "--output-last-message",
@@ -5070,7 +5519,6 @@ function codebaseReviewCommand(args: Args): void {
     ],
     {
       cwd: targetDir,
-      encoding: "utf8",
       env: codexEnv(),
       input: codebaseReviewPrompt(targetDir),
       maxBuffer: 128 * 1024 * 1024,
@@ -5091,7 +5539,7 @@ function codebaseReviewCommand(args: Args): void {
 
 function launchCommand(args: Args): void {
   const launchArgs: Args = { ...args };
-  if (!launchArgs.target_dir && !launchArgs.openclaw_dir) {
+  if (!launchArgs.target_dir) {
     launchArgs.target_dir = process.cwd();
   }
   const remoteBranch = currentRemoteBranch();
@@ -5128,10 +5576,18 @@ function helpCommand(): void {
   console.log(`pk-sweeper
 
 Usage:
-  pk-sweeper quick [--repo owner/repo] [--agents 50] [--concurrency 50]
-  pk-sweeper plan [--repo owner/repo]
-  pk-sweeper review [--repo owner/repo]
-  pk-sweeper apply-decisions [--repo owner/repo]
+  pk-sweeper sweep [--repo <owner>/<repo>]
+  pk-sweeper quick [--repo <owner>/<repo>] [--agents 50] [--concurrency 50]
+  pk-sweeper plan [--repo <owner>/<repo>]
+  pk-sweeper review [--repo <owner>/<repo>]
+  pk-sweeper linear-pr-reviewer --pr-url <url> [--repo <owner>/<repo>]
+  pk-sweeper apply-decisions [--repo <owner>/<repo>]
+
+Sweep mode:
+  Recommended for normal coding sessions. Run it from the target repository
+  checkout. It auto-detects the repo from origin, checks both issues and PRs
+  with balanced selection, and writes recommendation reports without applying
+  close or merge decisions.
 
 Quick mode:
   Reviews open GitHub issues and PRs now, starting only shards with selected items.
@@ -5143,17 +5599,24 @@ Quick mode:
     <repo>.pksweeper/potential-issues.md
 
 Useful quick options:
-  --repo owner/repo              Target GitHub repository.
+  --repo <owner>/<repo>          Target GitHub repository.
   --agents N                    Number of planned shards. Default: 50.
   --concurrency N               Concurrent shard processes. Default: same as agents.
   --batch-size N                Items per shard. Default: 1.
   --max-pages N                 GitHub open item pages to scan. Default: 25.
   --codex-model MODEL           Codex model. Default: gpt-5.4-mini.
+  --codex-provider NAME         Codex model provider override, e.g. qwen.
+  --codex-provider-name NAME    Provider display name for Codex config.
+  --codex-provider-base-url URL Provider OpenAI-compatible base URL.
+  --codex-provider-env-key VAR  Environment variable holding the provider API key.
   --codex-bin PATH              Codex executable. Also supports PKSWEEPER_CODEX_BIN.
   --workspace PATH              Output workspace. Default: sibling <repo>.pksweeper.
   --create-issues               Create GitHub issues from no-open-item codebase gaps.
+  --balance-kinds false         Disable the default issue/PR balanced selection.
+  --allow-dirty                 Continue even when the target checkout has local changes.
   --respect-cadence             Skip items that were recently reviewed.
   --respect-exclusions          Skip maintainer-authored and protected-label items.
+  linear-pr-reviewer             Review one PR URL and emit JSON for Linear/runner hooks.
   apply-decisions --merge-prs    Merge high-confidence proposed PR merge reports.
   --help, -h                    Show this help without scanning GitHub.
 `);
@@ -5165,8 +5628,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (command === "help" || command === "-h" || boolArg(args.help) || boolArg(args.h))
     helpCommand();
   else if (command === "launch") launchCommand(args);
+  else if (command === "sweep") await sweepCommand(args);
   else if (command === "plan") planCommand(args);
   else if (command === "review") reviewCommand(args);
+  else if (command === "linear-pr-reviewer") linearPrReviewerCommand(args);
   else if (command === "review-codebase") codebaseReviewCommand(args);
   else if (command === "quick" || command === "run") await quickCommand(args);
   else if (command === "apply-artifacts") applyArtifactsCommand(args);
@@ -5186,7 +5651,16 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+function isCliEntrypoint(): boolean {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+  }
+}
+
+if (isCliEntrypoint()) {
   main().catch((error: unknown) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

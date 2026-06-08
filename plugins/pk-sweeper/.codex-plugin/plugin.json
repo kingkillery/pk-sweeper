@@ -1,0 +1,24 @@
+{
+  "name": "pk-sweeper",
+  "version": "0.1.0",
+  "description": "Safe GitHub issue and pull request review workflows using the local pk-sweeper CLI.",
+  "author": {
+    "name": "Kade"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "PK Sweeper",
+    "shortDescription": "Review GitHub issues and PRs safely from any repo.",
+    "longDescription": "PK Sweeper teaches Codex how to run the local pk-sweeper CLI from a target repository, inspect open issues and pull requests, generate recommendation reports, and use the Linear PR reviewer path without applying mutating GitHub decisions unless explicitly requested.",
+    "developerName": "Kade",
+    "category": "Productivity",
+    "capabilities": [
+      "GitHub issue review",
+      "GitHub pull request review",
+      "Linear PR reviewer smoke checks",
+      "Safe non-mutating sweep reports",
+      "Maintainer decision planning"
+    ],
+    "defaultPrompt": "Use PK Sweeper to review this repository's open GitHub issues and pull requests safely."
+  }
+}

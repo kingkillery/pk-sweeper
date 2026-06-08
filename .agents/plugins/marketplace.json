@@ -1,0 +1,20 @@
+{
+  "name": "pk-sweeper",
+  "interface": {
+    "displayName": "PK Sweeper"
+  },
+  "plugins": [
+    {
+      "name": "pk-sweeper",
+      "source": {
+        "source": "local",
+        "path": "./plugins/pk-sweeper"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

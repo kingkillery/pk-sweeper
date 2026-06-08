@@ -1,0 +1,8 @@
+{
+  "name": "pk-sweeper",
+  "version": "0.1.0",
+  "description": "Safe GitHub issue and pull request review workflows using the local pk-sweeper CLI.",
+  "author": {
+    "name": "Kade"
+  }
+}

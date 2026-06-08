@@ -1,7 +1,15 @@
 {
   "name": "pk-sweeper",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "private": false,
+  "description": "Conservative GitHub issue and pull request sweep recommendations.",
+  "keywords": [
+    "codex",
+    "github",
+    "issues",
+    "maintenance",
+    "pull-requests"
+  ],
   "license": "MIT",
   "bin": {
     "pk-sweeper": "dist/pksweeper.js",
@@ -9,12 +17,18 @@
   },
   "files": [
     "dist",
+    ".agents",
+    ".claude-plugin",
+    "plugins",
     "prompts",
     "schema",
     "README.md",
     "LICENSE"
   ],
   "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsgo -p tsconfig.json",
     "prepare": "npm run build",
